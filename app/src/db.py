@@ -105,13 +105,70 @@ def is_admin_active(db_path: str, tg_user_id: int) -> bool:
         return cur.fetchone() is not None
 
 
-def get_client_by_phone(db_path: str, phone: str) -> Optional[Tuple[int, str, str]]:
+def get_client_by_phone(db_path: str, phone: str) -> Optional[Tuple[int, str, str, Optional[str], Optional[str], Optional[str]]]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
-            "SELECT client_id, full_name, phone FROM clients WHERE phone = ? LIMIT 1",
+            """
+            SELECT client_id, full_name, phone, tg_username, birth_date, comment
+            FROM clients
+            WHERE phone = ?
+            LIMIT 1
+            """,
             (phone,),
         )
         return cur.fetchone()
+
+
+def get_client_by_tg_username(
+    db_path: str, tg_username: str
+) -> Optional[Tuple[int, str, str, Optional[str], Optional[str], Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT client_id, full_name, phone, tg_username, birth_date, comment
+            FROM clients
+            WHERE lower(ltrim(tg_username, '@')) = ?
+            LIMIT 1
+            """,
+            (tg_username.lower(),),
+        )
+        return cur.fetchone()
+
+
+def get_client_by_id(
+    db_path: str, client_id: int
+) -> Optional[Tuple[int, str, str, Optional[str], Optional[str], Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT client_id, full_name, phone, tg_username, birth_date, comment
+            FROM clients
+            WHERE client_id = ?
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        return cur.fetchone()
+
+
+def search_clients_by_name(
+    db_path: str, query: str, limit: int = 11
+) -> List[Tuple[int, str, str]]:
+    query = query.strip()
+    if not query:
+        return []
+    normalized = query.casefold()
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT client_id, full_name, phone
+            FROM clients
+            """,
+        )
+        rows = cur.fetchall()
+    matched = [row for row in rows if normalized in row[1].casefold()]
+    matched.sort(key=lambda row: row[1].casefold())
+    return matched[:limit]
 
 
 def create_client(

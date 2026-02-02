@@ -34,6 +34,22 @@ CONFIRM_BUTTONS = [
     "❌ Отмена",
 ]
 
+SEARCH_MENU_BUTTONS = [
+    "📱 По телефону",
+    "🔤 По имени",
+    "👤 Telegram",
+    "❌ Отмена",
+]
+
+CLIENT_ACTION_BUTTONS = [
+    "📅 Записать",
+    "✅ Отметить",
+    "💳 Оплата",
+    "🎫 Абонемент",
+    "↩️ Назад",
+    "❌ Отмена",
+]
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -79,3 +95,42 @@ def confirm_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=CONFIRM_BUTTONS[1])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def search_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=SEARCH_MENU_BUTTONS[0])],
+        [KeyboardButton(text=SEARCH_MENU_BUTTONS[1])],
+        [KeyboardButton(text=SEARCH_MENU_BUTTONS[2])],
+        [KeyboardButton(text=SEARCH_MENU_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text="❌ Отмена")]]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def not_found_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=MAIN_MENU_BUTTONS[0])],
+        [KeyboardButton(text="❌ Отмена")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def search_results_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def client_actions_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=CLIENT_ACTION_BUTTONS[0]), KeyboardButton(text=CLIENT_ACTION_BUTTONS[1])],
+        [KeyboardButton(text=CLIENT_ACTION_BUTTONS[2]), KeyboardButton(text=CLIENT_ACTION_BUTTONS[3])],
+        [KeyboardButton(text=CLIENT_ACTION_BUTTONS[4])],
+        [KeyboardButton(text=CLIENT_ACTION_BUTTONS[5])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
