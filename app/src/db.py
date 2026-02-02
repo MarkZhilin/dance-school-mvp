@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,24 @@ def init_db(db_path: str) -> None:
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clients (
+              client_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+              full_name    TEXT NOT NULL,
+              phone        TEXT NOT NULL,
+              tg_user_id   INTEGER,
+              tg_username  TEXT,
+              birth_date   TEXT,
+              comment      TEXT,
+              created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+              status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive'))
+            );
+            """
+        )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_phone ON clients(phone);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_clients_tg_user_id ON clients(tg_user_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_clients_tg_username ON clients(tg_username);")
         conn.commit()
 
 
@@ -76,3 +94,42 @@ def list_admins(db_path: str) -> Tuple[List[AdminRecord], List[AdminRecord]]:
         else:
             inactive.append(record)
     return active, inactive
+
+
+def is_admin_active(db_path: str, tg_user_id: int) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT 1 FROM admins WHERE tg_user_id = ? AND is_active = 1 LIMIT 1",
+            (tg_user_id,),
+        )
+        return cur.fetchone() is not None
+
+
+def get_client_by_phone(db_path: str, phone: str) -> Optional[Tuple[int, str, str]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT client_id, full_name, phone FROM clients WHERE phone = ? LIMIT 1",
+            (phone,),
+        )
+        return cur.fetchone()
+
+
+def create_client(
+    db_path: str,
+    full_name: str,
+    phone: str,
+    tg_user_id: Optional[int],
+    tg_username: Optional[str],
+    birth_date: Optional[str],
+    comment: Optional[str],
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO clients(full_name, phone, tg_user_id, tg_username, birth_date, comment)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (full_name, phone, tg_user_id, tg_username, birth_date, comment),
+        )
+        conn.commit()
+        return int(cur.lastrowid)

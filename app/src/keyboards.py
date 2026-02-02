@@ -1,4 +1,4 @@
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+﻿from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 MAIN_MENU_BUTTONS = [
     "➕ Новый клиент",
@@ -16,6 +16,22 @@ ADMIN_MENU_BUTTONS = [
     "⛔ Отключить админа",
     "📋 Список админов",
     "↩️ Назад",
+]
+
+NEW_CLIENT_PHONE_BUTTONS = [
+    "📱 Отправить контакт",
+    "✍️ Ввести вручную",
+    "❌ Отмена",
+]
+
+SKIP_BUTTONS = [
+    "Пропустить",
+    "❌ Отмена",
+]
+
+CONFIRM_BUTTONS = [
+    "✅ Сохранить",
+    "❌ Отмена",
 ]
 
 
@@ -38,3 +54,28 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=ADMIN_MENU_BUTTONS[3])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def new_client_phone_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=NEW_CLIENT_PHONE_BUTTONS[0], request_contact=True)],
+        [KeyboardButton(text=NEW_CLIENT_PHONE_BUTTONS[1])],
+        [KeyboardButton(text=NEW_CLIENT_PHONE_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def skip_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=SKIP_BUTTONS[0])],
+        [KeyboardButton(text=SKIP_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def confirm_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=CONFIRM_BUTTONS[0])],
+        [KeyboardButton(text=CONFIRM_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
