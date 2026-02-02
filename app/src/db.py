@@ -326,3 +326,73 @@ def create_single_visit_booked(
         )
         conn.commit()
     return True
+
+
+def list_clients_for_attendance(
+    db_path: str, group_id: int, visit_date: str
+) -> List[Tuple[int, str, str]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT client_id, full_name, phone FROM (
+              SELECT c.client_id AS client_id, c.full_name AS full_name, c.phone AS phone
+              FROM client_groups cg
+              JOIN clients c ON c.client_id = cg.client_id
+              WHERE cg.group_id = ? AND cg.status = 'active'
+              UNION
+              SELECT c.client_id AS client_id, c.full_name AS full_name, c.phone AS phone
+              FROM visits v
+              JOIN clients c ON c.client_id = v.client_id
+              WHERE v.group_id = ? AND v.visit_date = ? AND v.status = 'booked'
+            )
+            ORDER BY full_name COLLATE NOCASE
+            """,
+            (group_id, group_id, visit_date),
+        )
+        return cur.fetchall()
+
+
+def get_visit_by_date_group_client(
+    db_path: str, visit_date: str, group_id: int, client_id: int
+) -> Optional[Tuple[int, str]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT visit_id, status
+            FROM visits
+            WHERE visit_date = ? AND group_id = ? AND client_id = ? AND schedule_id IS NULL
+            LIMIT 1
+            """,
+            (visit_date, group_id, client_id),
+        )
+        return cur.fetchone()
+
+
+def upsert_visit_status(
+    db_path: str,
+    visit_date: str,
+    group_id: int,
+    client_id: int,
+    status: str,
+    created_by: Optional[int],
+) -> None:
+    existing = get_visit_by_date_group_client(db_path, visit_date, group_id, client_id)
+    with sqlite3.connect(db_path) as conn:
+        if existing:
+            conn.execute(
+                """
+                UPDATE visits
+                SET status = ?, created_by = ?
+                WHERE visit_id = ?
+                """,
+                (status, created_by, existing[0]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO visits(visit_date, group_id, schedule_id, client_id, status, created_by)
+                VALUES (?, ?, NULL, ?, ?, ?)
+                """,
+                (visit_date, group_id, client_id, status, created_by),
+            )
+        conn.commit()

@@ -75,6 +75,21 @@ ADD_GROUP_BUTTONS = [
     "❌ Отмена",
 ]
 
+ATTENDANCE_DATE_BUTTONS = [
+    "Сегодня",
+    "Вчера",
+    "Ввести дату (YYYY-MM-DD)",
+    "Отмена",
+]
+
+ATTENDANCE_STATUS_BUTTONS = [
+    "✅ Был",
+    "❌ Не пришёл",
+    "🚫 Отменил",
+    "Назад",
+    "Отмена",
+]
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -200,4 +215,23 @@ def add_group_keyboard() -> ReplyKeyboardMarkup:
 def groups_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=label)] for label in labels]
     rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def attendance_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=ATTENDANCE_DATE_BUTTONS[0]), KeyboardButton(text=ATTENDANCE_DATE_BUTTONS[1])],
+        [KeyboardButton(text=ATTENDANCE_DATE_BUTTONS[2])],
+        [KeyboardButton(text=ATTENDANCE_DATE_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def attendance_status_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[0]), KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[1])],
+        [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[2])],
+        [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[3])],
+        [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[4])],
+    ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)

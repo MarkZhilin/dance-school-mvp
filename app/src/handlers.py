@@ -20,16 +20,21 @@ from db import (
     get_client_by_id,
     get_client_by_phone,
     get_client_by_tg_username,
+    get_visit_by_date_group_client,
     is_admin_active,
+    list_clients_for_attendance,
     list_active_groups,
     list_admins,
     search_clients_by_name,
     upsert_client_group_active,
+    upsert_visit_status,
     upsert_admin,
 )
 from keyboards import (
     ADMIN_MENU_BUTTONS,
     ADD_GROUP_BUTTONS,
+    ATTENDANCE_DATE_BUTTONS,
+    ATTENDANCE_STATUS_BUTTONS,
     BOOKING_CLIENT_SEARCH_BUTTONS,
     BOOKING_DATE_BUTTONS,
     BOOKING_TYPE_BUTTONS,
@@ -41,6 +46,8 @@ from keyboards import (
     SKIP_BUTTONS,
     add_group_keyboard,
     admin_menu_keyboard,
+    attendance_date_keyboard,
+    attendance_status_keyboard,
     booking_client_search_keyboard,
     booking_date_keyboard,
     booking_type_keyboard,
@@ -94,6 +101,13 @@ class BookingStates(StatesGroup):
     add_group = State()
     select_date = State()
     confirm = State()
+
+
+class AttendanceStates(StatesGroup):
+    select_group = State()
+    select_date = State()
+    select_client = State()
+    select_status = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -174,6 +188,10 @@ def _format_booking_summary(
         f"Тип: {type_label}\n"
         f"{date_line}"
     )
+
+
+def _format_attendance_client_label(full_name: str, phone: str) -> str:
+    return f"{full_name} ({phone})"
 
 
 def _format_client_card(
@@ -735,6 +753,151 @@ async def handle_booking_confirm(message: Message, config: Config, state: FSMCon
     await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[3])
+async def handle_attendance_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    groups = list_active_groups(config.db_path)
+    if not groups:
+        await state.clear()
+        await message.answer("Групп пока нет", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    labels = [_format_group_label(group[0], group[1]) for group in groups]
+    mapping = {label: group[0] for label, group in zip(labels, groups)}
+    await state.clear()
+    await state.set_state(AttendanceStates.select_group)
+    await state.update_data(group_map=mapping, group_names={group[0]: group[1] for group in groups})
+    await message.answer("Выберите группу", reply_markup=groups_keyboard(labels))
+
+
+@router.message(AttendanceStates.select_group)
+async def handle_attendance_select_group(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    mapping = data.get("group_map", {})
+    group_names = data.get("group_names", {})
+    if message.text not in mapping:
+        await message.answer("Выберите группу из списка")
+        return
+    group_id = int(mapping[message.text])
+    group_name = group_names.get(group_id, message.text)
+    await state.update_data(group_id=group_id, group_name=group_name)
+    await state.set_state(AttendanceStates.select_date)
+    await message.answer("Выберите дату", reply_markup=attendance_date_keyboard())
+
+
+@router.message(AttendanceStates.select_date)
+async def handle_attendance_select_date(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == ATTENDANCE_DATE_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == ATTENDANCE_DATE_BUTTONS[0]:
+        selected_date = date.today().strftime("%Y-%m-%d")
+    elif message.text == ATTENDANCE_DATE_BUTTONS[1]:
+        selected_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    elif message.text == ATTENDANCE_DATE_BUTTONS[2]:
+        await message.answer("Введите дату в формате YYYY-MM-DD")
+        return
+    else:
+        parsed = _parse_iso_date(message.text or "")
+        if not parsed:
+            await message.answer("Неверный формат даты, используйте YYYY-MM-DD")
+            return
+        selected_date = parsed
+
+    data = await state.get_data()
+    group_id = int(data.get("group_id"))
+    clients = list_clients_for_attendance(config.db_path, group_id, selected_date)
+    if not clients:
+        await state.clear()
+        await message.answer("Нет клиентов для отметки", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    labels = [_format_attendance_client_label(row[1], row[2]) for row in clients]
+    mapping = {label: row[0] for label, row in zip(labels, clients)}
+    await state.update_data(attendance_date=selected_date, client_map=mapping)
+    await state.set_state(AttendanceStates.select_client)
+    await message.answer("Выберите клиента", reply_markup=search_results_keyboard(labels))
+
+
+@router.message(AttendanceStates.select_client)
+async def handle_attendance_select_client(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    mapping = data.get("client_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите клиента из списка")
+        return
+    client_id = int(mapping[message.text])
+    client = get_client_by_id(config.db_path, client_id)
+    if not client:
+        await state.clear()
+        await message.answer("Клиент не найден", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await state.update_data(client_id=client_id, client_name=client[1])
+    await state.set_state(AttendanceStates.select_status)
+    await message.answer("Отметить посещение", reply_markup=attendance_status_keyboard())
+
+
+@router.message(AttendanceStates.select_status)
+async def handle_attendance_select_status(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == ATTENDANCE_STATUS_BUTTONS[4]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == ATTENDANCE_STATUS_BUTTONS[3]:
+        data = await state.get_data()
+        mapping = data.get("client_map", {})
+        labels = list(mapping.keys())
+        await state.set_state(AttendanceStates.select_client)
+        await message.answer("Выберите клиента", reply_markup=search_results_keyboard(labels))
+        return
+
+    status_map = {
+        ATTENDANCE_STATUS_BUTTONS[0]: "attended",
+        ATTENDANCE_STATUS_BUTTONS[1]: "noshow",
+        ATTENDANCE_STATUS_BUTTONS[2]: "cancelled",
+    }
+    if message.text not in status_map:
+        await message.answer("Выберите статус", reply_markup=attendance_status_keyboard())
+        return
+
+    data = await state.get_data()
+    visit_date = data.get("attendance_date")
+    group_id = int(data.get("group_id"))
+    client_id = int(data.get("client_id"))
+    created_by = message.from_user.id if message.from_user else None
+    upsert_visit_status(
+        config.db_path,
+        visit_date=visit_date,
+        group_id=group_id,
+        client_id=client_id,
+        status=status_map[message.text],
+        created_by=created_by,
+    )
+    await state.clear()
+    await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
+
+
 @router.message(F.text == MAIN_MENU_BUTTONS[1])
 async def handle_search_menu(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
@@ -918,6 +1081,7 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     & (F.text != MAIN_MENU_BUTTONS[0])
     & (F.text != MAIN_MENU_BUTTONS[1])
     & (F.text != MAIN_MENU_BUTTONS[2])
+    & (F.text != MAIN_MENU_BUTTONS[3])
 )
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
