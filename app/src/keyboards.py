@@ -50,6 +50,31 @@ CLIENT_ACTION_BUTTONS = [
     "❌ Отмена",
 ]
 
+BOOKING_CLIENT_SEARCH_BUTTONS = [
+    "📱 По телефону",
+    "🔤 По имени",
+    "👤 Telegram",
+    "❌ Отмена",
+]
+
+BOOKING_TYPE_BUTTONS = [
+    "Разовое",
+    "По абонементу (закрепить в группе)",
+    "❌ Отмена",
+]
+
+BOOKING_DATE_BUTTONS = [
+    "Сегодня",
+    "Завтра",
+    "Ввести дату",
+    "❌ Отмена",
+]
+
+ADD_GROUP_BUTTONS = [
+    "➕ Добавить группу",
+    "❌ Отмена",
+]
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -134,3 +159,45 @@ def client_actions_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=CLIENT_ACTION_BUTTONS[5])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def booking_client_search_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=BOOKING_CLIENT_SEARCH_BUTTONS[0])],
+        [KeyboardButton(text=BOOKING_CLIENT_SEARCH_BUTTONS[1])],
+        [KeyboardButton(text=BOOKING_CLIENT_SEARCH_BUTTONS[2])],
+        [KeyboardButton(text=BOOKING_CLIENT_SEARCH_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def booking_type_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=BOOKING_TYPE_BUTTONS[0])],
+        [KeyboardButton(text=BOOKING_TYPE_BUTTONS[1])],
+        [KeyboardButton(text=BOOKING_TYPE_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def booking_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=BOOKING_DATE_BUTTONS[0]), KeyboardButton(text=BOOKING_DATE_BUTTONS[1])],
+        [KeyboardButton(text=BOOKING_DATE_BUTTONS[2])],
+        [KeyboardButton(text=BOOKING_DATE_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def add_group_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=ADD_GROUP_BUTTONS[0])],
+        [KeyboardButton(text=ADD_GROUP_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def groups_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)

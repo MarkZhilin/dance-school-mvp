@@ -24,6 +24,30 @@ def init_db(db_path: str) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS groups (
+              group_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+              name         TEXT NOT NULL,
+              trainer_name TEXT,
+              capacity     INTEGER NOT NULL DEFAULT 0 CHECK (capacity >= 0),
+              room_name    TEXT,
+              is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedule (
+              schedule_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+              group_id     INTEGER NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+              day_of_week  INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+              time_hhmm    TEXT NOT NULL,
+              duration_min INTEGER NOT NULL CHECK (duration_min > 0),
+              is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+            );
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS admins (
               tg_user_id INTEGER UNIQUE,
               name TEXT NOT NULL,
@@ -50,6 +74,40 @@ def init_db(db_path: str) -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_phone ON clients(phone);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_clients_tg_user_id ON clients(tg_user_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_clients_tg_username ON clients(tg_username);")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_groups (
+              client_id   INTEGER NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+              group_id    INTEGER NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+              status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+              since_date  TEXT NOT NULL DEFAULT (date('now')),
+              until_date  TEXT,
+              PRIMARY KEY (client_id, group_id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visits (
+              visit_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+              visit_date   TEXT NOT NULL,
+              group_id     INTEGER NOT NULL REFERENCES groups(group_id),
+              schedule_id  INTEGER REFERENCES schedule(schedule_id),
+              client_id    INTEGER NOT NULL REFERENCES clients(client_id),
+              status       TEXT NOT NULL CHECK (status IN ('booked','attended','noshow','cancelled')),
+              created_by   INTEGER,
+              created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+              comment      TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_visits_unique
+              ON visits(visit_date, group_id, schedule_id, client_id);
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_visits_date_group ON visits(visit_date, group_id);")
         conn.commit()
 
 
@@ -190,3 +248,81 @@ def create_client(
         )
         conn.commit()
         return int(cur.lastrowid)
+
+
+def list_active_groups(db_path: str) -> List[Tuple[int, str, Optional[str], int, Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT group_id, name, trainer_name, capacity, room_name
+            FROM groups
+            WHERE is_active = 1
+            ORDER BY name COLLATE NOCASE
+            """
+        )
+        return cur.fetchall()
+
+
+def create_group(
+    db_path: str,
+    name: str,
+    trainer_name: Optional[str] = None,
+    capacity: int = 0,
+    room_name: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO groups(name, trainer_name, capacity, room_name, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            """,
+            (name, trainer_name, capacity, room_name),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def upsert_client_group_active(db_path: str, client_id: int, group_id: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO client_groups(client_id, group_id, status)
+            VALUES (?, ?, 'active')
+            ON CONFLICT(client_id, group_id) DO UPDATE SET
+              status = 'active',
+              until_date = NULL
+            """,
+            (client_id, group_id),
+        )
+        conn.commit()
+
+
+def visit_exists(db_path: str, date: str, group_id: int, client_id: int) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT 1
+            FROM visits
+            WHERE visit_date = ? AND group_id = ? AND client_id = ? AND schedule_id IS NULL
+            LIMIT 1
+            """,
+            (date, group_id, client_id),
+        )
+        return cur.fetchone() is not None
+
+
+def create_single_visit_booked(
+    db_path: str, date: str, group_id: int, client_id: int, created_by: Optional[int]
+) -> bool:
+    if visit_exists(db_path, date, group_id, client_id):
+        return False
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO visits(visit_date, group_id, schedule_id, client_id, status, created_by)
+            VALUES (?, ?, NULL, ?, 'booked', ?)
+            """,
+            (date, group_id, client_id, created_by),
+        )
+        conn.commit()
+    return True

@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import re
 import sqlite3
 from typing import Optional
@@ -14,27 +14,40 @@ from aiogram.types import Message
 from config import Config
 from db import (
     create_client,
+    create_group,
+    create_single_visit_booked,
     deactivate_admin,
     get_client_by_id,
     get_client_by_phone,
     get_client_by_tg_username,
     is_admin_active,
+    list_active_groups,
     list_admins,
     search_clients_by_name,
+    upsert_client_group_active,
     upsert_admin,
 )
 from keyboards import (
     ADMIN_MENU_BUTTONS,
+    ADD_GROUP_BUTTONS,
+    BOOKING_CLIENT_SEARCH_BUTTONS,
+    BOOKING_DATE_BUTTONS,
+    BOOKING_TYPE_BUTTONS,
     CLIENT_ACTION_BUTTONS,
     CONFIRM_BUTTONS,
     MAIN_MENU_BUTTONS,
     NEW_CLIENT_PHONE_BUTTONS,
     SEARCH_MENU_BUTTONS,
     SKIP_BUTTONS,
+    add_group_keyboard,
     admin_menu_keyboard,
+    booking_client_search_keyboard,
+    booking_date_keyboard,
+    booking_type_keyboard,
     cancel_keyboard,
     client_actions_keyboard,
     confirm_keyboard,
+    groups_keyboard,
     main_menu_keyboard,
     new_client_phone_keyboard,
     not_found_keyboard,
@@ -68,6 +81,19 @@ class SearchStates(StatesGroup):
     tg_username = State()
     select = State()
     card = State()
+
+
+class BookingStates(StatesGroup):
+    select_client = State()
+    client_phone = State()
+    client_name = State()
+    client_tg = State()
+    client_select = State()
+    select_type = State()
+    select_group = State()
+    add_group = State()
+    select_date = State()
+    confirm = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -118,6 +144,36 @@ def _parse_birth_date(value: str) -> Optional[str]:
             continue
         return parsed.strftime("%Y-%m-%d")
     return None
+
+
+def _parse_iso_date(value: str) -> Optional[str]:
+    value = value.strip()
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _format_group_label(group_id: int, name: str) -> str:
+    return f"{name} (id:{group_id})"
+
+
+def _format_booking_summary(
+    client_name: str,
+    group_name: str,
+    booking_type: str,
+    booking_date: Optional[str],
+) -> str:
+    type_label = "Разовое" if booking_type == "single" else "По абонементу"
+    date_line = f"Дата: {booking_date}" if booking_date else "Дата: —"
+    return (
+        "Проверьте данные:\n"
+        f"Клиент: {client_name}\n"
+        f"Группа: {group_name}\n"
+        f"Тип: {type_label}\n"
+        f"{date_line}"
+    )
 
 
 def _format_client_card(
@@ -354,6 +410,331 @@ async def handle_new_client_confirm(message: Message, config: Config, state: FSM
     await message.answer("Клиент добавлен ✅", reply_markup=_main_menu_reply_markup(message, config))
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[2])
+async def handle_booking_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(BookingStates.select_client)
+    await message.answer("Выберите способ поиска клиента", reply_markup=booking_client_search_keyboard())
+
+
+@router.message(BookingStates.select_client)
+async def handle_booking_select_client_method(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[0]:
+        await state.set_state(BookingStates.client_phone)
+        await message.answer("Введите телефон клиента", reply_markup=new_client_phone_keyboard())
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[1]:
+        await state.set_state(BookingStates.client_name)
+        await message.answer("Введите имя или часть имени", reply_markup=cancel_keyboard())
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[2]:
+        await state.set_state(BookingStates.client_tg)
+        await message.answer("Введите username (с @ или без)", reply_markup=cancel_keyboard())
+        return
+    await message.answer("Выберите способ поиска клиента", reply_markup=booking_client_search_keyboard())
+
+
+@router.message(BookingStates.client_phone)
+async def handle_booking_client_phone(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == NEW_CLIENT_PHONE_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == NEW_CLIENT_PHONE_BUTTONS[1]:
+        await message.answer("Введите телефон вручную")
+        return
+
+    raw_phone = None
+    if message.contact and message.contact.phone_number:
+        raw_phone = message.contact.phone_number
+    elif message.text:
+        raw_phone = message.text
+
+    if not raw_phone:
+        await message.answer("Введите телефон клиента")
+        return
+
+    normalized = _normalize_phone(raw_phone)
+    if not normalized:
+        await message.answer("Не удалось распознать телефон, попробуйте еще раз")
+        return
+
+    client = get_client_by_phone(config.db_path, normalized)
+    if not client:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+
+    await state.update_data(client_id=client[0], client_name=client[1])
+    await state.set_state(BookingStates.select_type)
+    await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+
+
+@router.message(BookingStates.client_name)
+async def handle_booking_client_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите имя или часть имени")
+        return
+
+    results = search_clients_by_name(config.db_path, message.text.strip(), limit=11)
+    if len(results) == 0:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+    if len(results) == 1:
+        await state.update_data(client_id=results[0][0], client_name=results[0][1])
+        await state.set_state(BookingStates.select_type)
+        await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+        return
+    if len(results) > 10:
+        await message.answer("Слишком много результатов, уточните запрос")
+        return
+
+    labels = [f"{row[1]} ({row[2]})" for row in results]
+    mapping = {label: row[0] for label, row in zip(labels, results)}
+    await state.update_data(search_results=mapping)
+    await state.set_state(BookingStates.client_select)
+    await message.answer("Выберите клиента", reply_markup=search_results_keyboard(labels))
+
+
+@router.message(BookingStates.client_tg)
+async def handle_booking_client_tg(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите username")
+        return
+
+    normalized = _normalize_username(message.text)
+    if not normalized:
+        await message.answer("Введите username")
+        return
+
+    client = get_client_by_tg_username(config.db_path, normalized)
+    if not client:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+
+    await state.update_data(client_id=client[0], client_name=client[1])
+    await state.set_state(BookingStates.select_type)
+    await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+
+
+@router.message(BookingStates.client_select)
+async def handle_booking_client_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    mapping = data.get("search_results", {})
+    if message.text not in mapping:
+        await message.answer("Выберите клиента из списка")
+        return
+    client_id = int(mapping[message.text])
+    client = get_client_by_id(config.db_path, client_id)
+    if not client:
+        await state.clear()
+        await message.answer("Клиент не найден", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await state.update_data(client_id=client_id, client_name=client[1])
+    await state.set_state(BookingStates.select_type)
+    await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+
+
+@router.message(BookingStates.select_type)
+async def handle_booking_select_type(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == BOOKING_TYPE_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == BOOKING_TYPE_BUTTONS[0]:
+        await state.update_data(booking_type="single")
+    elif message.text == BOOKING_TYPE_BUTTONS[1]:
+        await state.update_data(booking_type="pass")
+    else:
+        await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+        return
+
+    groups = list_active_groups(config.db_path)
+    if not groups:
+        await state.set_state(BookingStates.add_group)
+        await message.answer("Групп пока нет", reply_markup=add_group_keyboard())
+        return
+
+    labels = [_format_group_label(group[0], group[1]) for group in groups]
+    mapping = {label: group[0] for label, group in zip(labels, groups)}
+    await state.update_data(group_map=mapping, group_names={group[0]: group[1] for group in groups})
+    await state.set_state(BookingStates.select_group)
+    await message.answer("Выберите группу", reply_markup=groups_keyboard(labels))
+
+
+@router.message(BookingStates.add_group)
+async def handle_booking_add_group(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == ADD_GROUP_BUTTONS[1]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == ADD_GROUP_BUTTONS[0]:
+        await message.answer("Введите название группы")
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите название группы")
+        return
+    group_id = create_group(config.db_path, name=message.text.strip())
+    groups = list_active_groups(config.db_path)
+    labels = [_format_group_label(group[0], group[1]) for group in groups]
+    mapping = {label: group[0] for label, group in zip(labels, groups)}
+    await state.update_data(group_map=mapping, group_names={group[0]: group[1] for group in groups})
+    await state.set_state(BookingStates.select_group)
+    await message.answer("Выберите группу", reply_markup=groups_keyboard(labels))
+
+
+@router.message(BookingStates.select_group)
+async def handle_booking_select_group(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    mapping = data.get("group_map", {})
+    group_names = data.get("group_names", {})
+    if message.text not in mapping:
+        await message.answer("Выберите группу из списка")
+        return
+    group_id = int(mapping[message.text])
+    group_name = group_names.get(group_id, message.text)
+    await state.update_data(group_id=group_id, group_name=group_name)
+
+    booking_type = data.get("booking_type")
+    if booking_type == "single":
+        await state.set_state(BookingStates.select_date)
+        await message.answer("Выберите дату", reply_markup=booking_date_keyboard())
+        return
+
+    summary = _format_booking_summary(
+        client_name=data.get("client_name"),
+        group_name=group_name,
+        booking_type="pass",
+        booking_date=None,
+    )
+    await state.set_state(BookingStates.confirm)
+    await message.answer(summary, reply_markup=confirm_keyboard())
+
+
+@router.message(BookingStates.select_date)
+async def handle_booking_select_date(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == BOOKING_DATE_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == BOOKING_DATE_BUTTONS[0]:
+        selected_date = date.today().strftime("%Y-%m-%d")
+    elif message.text == BOOKING_DATE_BUTTONS[1]:
+        selected_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif message.text == BOOKING_DATE_BUTTONS[2]:
+        await message.answer("Введите дату в формате YYYY-MM-DD")
+        return
+    else:
+        parsed = _parse_iso_date(message.text or "")
+        if not parsed:
+            await message.answer("Неверный формат даты, используйте YYYY-MM-DD")
+            return
+        selected_date = parsed
+
+    data = await state.get_data()
+    await state.update_data(booking_date=selected_date)
+    summary = _format_booking_summary(
+        client_name=data.get("client_name"),
+        group_name=data.get("group_name"),
+        booking_type="single",
+        booking_date=selected_date,
+    )
+    await state.set_state(BookingStates.confirm)
+    await message.answer(summary, reply_markup=confirm_keyboard())
+
+
+@router.message(BookingStates.confirm)
+async def handle_booking_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text not in CONFIRM_BUTTONS:
+        await message.answer("Выберите действие", reply_markup=confirm_keyboard())
+        return
+    if message.text == CONFIRM_BUTTONS[1]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+
+    data = await state.get_data()
+    booking_type = data.get("booking_type")
+    client_id = int(data.get("client_id"))
+    group_id = int(data.get("group_id"))
+
+    if booking_type == "single":
+        booking_date = data.get("booking_date")
+        created_by = message.from_user.id if message.from_user else None
+        created = create_single_visit_booked(
+            config.db_path,
+            date=booking_date,
+            group_id=group_id,
+            client_id=client_id,
+            created_by=created_by,
+        )
+        await state.clear()
+        if not created:
+            await message.answer("Запись уже существует", reply_markup=_main_menu_reply_markup(message, config))
+            return
+        await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
+        return
+
+    upsert_client_group_active(config.db_path, client_id=client_id, group_id=group_id)
+    await state.clear()
+    await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
+
+
 @router.message(F.text == MAIN_MENU_BUTTONS[1])
 async def handle_search_menu(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
@@ -532,7 +913,12 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
 
 
-@router.message(F.text.in_(MAIN_MENU_BUTTONS) & (F.text != MAIN_MENU_BUTTONS[0]) & (F.text != MAIN_MENU_BUTTONS[1]))
+@router.message(
+    F.text.in_(MAIN_MENU_BUTTONS)
+    & (F.text != MAIN_MENU_BUTTONS[0])
+    & (F.text != MAIN_MENU_BUTTONS[1])
+    & (F.text != MAIN_MENU_BUTTONS[2])
+)
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
         return
