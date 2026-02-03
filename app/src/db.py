@@ -108,6 +108,60 @@ def init_db(db_path: str) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_visits_date_group ON visits(visit_date, group_id);")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS passes (
+              pass_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+              client_id   INTEGER NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+              group_id    INTEGER NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+              pass_type   TEXT NOT NULL DEFAULT 'monthly',
+              start_date  TEXT NOT NULL,
+              end_date    TEXT NOT NULL,
+              is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+              price       INTEGER,
+              comment     TEXT,
+              created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_passes_client_group
+              ON passes(client_id, group_id, is_active);
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_passes_one_active_per_group
+              ON passes(client_id, group_id)
+              WHERE is_active = 1;
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+              pay_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+              pay_date     TEXT NOT NULL DEFAULT (date('now')),
+              client_id    INTEGER REFERENCES clients(client_id),
+              group_id     INTEGER REFERENCES groups(group_id),
+              pass_id      INTEGER REFERENCES passes(pass_id),
+              visit_id     INTEGER REFERENCES visits(visit_id),
+              amount       INTEGER NOT NULL CHECK (amount > 0),
+              method       TEXT NOT NULL CHECK (method IN ('cash','transfer','qr','defer')),
+              status       TEXT NOT NULL DEFAULT 'paid' CHECK (status IN ('paid','deferred','cancelled')),
+              purpose      TEXT NOT NULL CHECK (purpose IN ('pass','single','other')),
+              due_date     TEXT,
+              accepted_by  INTEGER,
+              comment      TEXT,
+              created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_date ON payments(pay_date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_client ON payments(client_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_group ON payments(group_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_visit ON payments(visit_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_status_due ON payments(status, due_date);")
         conn.commit()
 
 
@@ -395,4 +449,145 @@ def upsert_visit_status(
                 """,
                 (visit_date, group_id, client_id, status, created_by),
             )
+        conn.commit()
+
+
+def get_or_create_single_visit(
+    db_path: str, client_id: int, group_id: int, visit_date: str, created_by: Optional[int]
+) -> int:
+    existing = get_visit_by_date_group_client(db_path, visit_date, group_id, client_id)
+    if existing:
+        return int(existing[0])
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO visits(visit_date, group_id, schedule_id, client_id, status, created_by)
+            VALUES (?, ?, NULL, ?, 'booked', ?)
+            """,
+            (visit_date, group_id, client_id, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_active_passes(
+    db_path: str, client_id: int, group_id: int, on_date: Optional[str] = None
+) -> List[Tuple[int, str, str, Optional[int], Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        if on_date:
+            cur = conn.execute(
+                """
+                SELECT pass_id, start_date, end_date, price, comment
+                FROM passes
+                WHERE client_id = ? AND group_id = ? AND is_active = 1
+                  AND start_date <= ? AND end_date >= ?
+                ORDER BY start_date DESC
+                """,
+                (client_id, group_id, on_date, on_date),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT pass_id, start_date, end_date, price, comment
+                FROM passes
+                WHERE client_id = ? AND group_id = ? AND is_active = 1
+                ORDER BY start_date DESC
+                """,
+                (client_id, group_id),
+            )
+        return cur.fetchall()
+
+
+def create_payment_single(
+    db_path: str,
+    client_id: int,
+    group_id: int,
+    visit_id: int,
+    amount: int,
+    method: str,
+    status: str,
+    due_date: Optional[str],
+    accepted_by: Optional[int],
+    comment: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO payments(
+              client_id, group_id, visit_id, amount, method, status, purpose,
+              due_date, accepted_by, comment
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'single', ?, ?, ?)
+            """,
+            (client_id, group_id, visit_id, amount, method, status, due_date, accepted_by, comment),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def create_payment_pass(
+    db_path: str,
+    client_id: int,
+    group_id: int,
+    pass_id: int,
+    amount: int,
+    method: str,
+    status: str,
+    due_date: Optional[str],
+    accepted_by: Optional[int],
+    comment: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO payments(
+              client_id, group_id, pass_id, amount, method, status, purpose,
+              due_date, accepted_by, comment
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'pass', ?, ?, ?)
+            """,
+            (client_id, group_id, pass_id, amount, method, status, due_date, accepted_by, comment),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_deferred_payments_by_client(
+    db_path: str, client_id: int
+) -> List[Tuple[int, int, str, Optional[int], Optional[str], Optional[str], str]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT p.pay_id, p.amount, p.purpose, p.group_id, g.name, p.due_date, p.created_at
+            FROM payments p
+            LEFT JOIN groups g ON g.group_id = p.group_id
+            WHERE p.client_id = ? AND p.status = 'deferred' AND p.method = 'defer'
+            ORDER BY p.created_at DESC
+            """,
+            (client_id,),
+        )
+        return cur.fetchall()
+
+
+def get_payment_by_id(db_path: str, pay_id: int) -> Optional[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT * FROM payments WHERE pay_id = ? LIMIT 1",
+            (pay_id,),
+        )
+        return cur.fetchone()
+
+
+def close_deferred_payment(
+    db_path: str, pay_id: int, new_method: str, pay_date: str, accepted_by: Optional[int]
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE payments
+            SET status = 'paid', method = ?, pay_date = ?, accepted_by = ?
+            WHERE pay_id = ?
+            """,
+            (new_method, pay_date, accepted_by, pay_id),
+        )
         conn.commit()

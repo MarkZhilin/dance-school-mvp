@@ -90,6 +90,55 @@ ATTENDANCE_STATUS_BUTTONS = [
     "Отмена",
 ]
 
+PAYMENT_MENU_BUTTONS = [
+    "➕ Принять оплату",
+    "🕒 Закрыть отсрочку",
+    "↩️ Назад",
+]
+
+PAYMENT_TYPE_BUTTONS = [
+    "Разовое",
+    "Абонемент",
+    "❌ Отмена",
+]
+
+PAYMENT_METHOD_BUTTONS = [
+    "Наличные",
+    "Перевод",
+    "QR",
+    "Отсрочка",
+    "❌ Отмена",
+]
+
+PAYMENT_DATE_BUTTONS = [
+    "Сегодня",
+    "Вчера",
+    "Ввести дату (YYYY-MM-DD)",
+    "❌ Отмена",
+]
+
+DEFER_DUE_DATE_BUTTONS = [
+    "Сегодня",
+    "Завтра",
+    "Выбрать дату",
+    "Пропустить",
+    "❌ Отмена",
+]
+
+PAYMENT_CLOSE_METHOD_BUTTONS = [
+    "Наличные",
+    "Перевод",
+    "QR",
+    "❌ Отмена",
+]
+
+PAYMENT_CLOSE_DATE_BUTTONS = [
+    "Сегодня",
+    "Вчера",
+    "Выбрать дату",
+    "❌ Отмена",
+]
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -233,5 +282,69 @@ def attendance_status_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[2])],
         [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[3])],
         [KeyboardButton(text=ATTENDANCE_STATUS_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_MENU_BUTTONS[0])],
+        [KeyboardButton(text=PAYMENT_MENU_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_MENU_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_type_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_TYPE_BUTTONS[0])],
+        [KeyboardButton(text=PAYMENT_TYPE_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_TYPE_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_method_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_METHOD_BUTTONS[0]), KeyboardButton(text=PAYMENT_METHOD_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_METHOD_BUTTONS[2]), KeyboardButton(text=PAYMENT_METHOD_BUTTONS[3])],
+        [KeyboardButton(text=PAYMENT_METHOD_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_DATE_BUTTONS[0]), KeyboardButton(text=PAYMENT_DATE_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_DATE_BUTTONS[2])],
+        [KeyboardButton(text=PAYMENT_DATE_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def defer_due_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=DEFER_DUE_DATE_BUTTONS[0]), KeyboardButton(text=DEFER_DUE_DATE_BUTTONS[1])],
+        [KeyboardButton(text=DEFER_DUE_DATE_BUTTONS[2])],
+        [KeyboardButton(text=DEFER_DUE_DATE_BUTTONS[3])],
+        [KeyboardButton(text=DEFER_DUE_DATE_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_close_method_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_CLOSE_METHOD_BUTTONS[0]), KeyboardButton(text=PAYMENT_CLOSE_METHOD_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_CLOSE_METHOD_BUTTONS[2])],
+        [KeyboardButton(text=PAYMENT_CLOSE_METHOD_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def payment_close_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[0]), KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[1])],
+        [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[2])],
+        [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[3])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
