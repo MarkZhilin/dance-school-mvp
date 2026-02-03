@@ -139,6 +139,25 @@ PAYMENT_CLOSE_DATE_BUTTONS = [
     "❌ Отмена",
 ]
 
+PASS_MENU_BUTTONS = [
+    "🎫 Выдать",
+    "🔁 Продлить",
+    "↩️ Назад",
+]
+
+PASS_AFTER_SAVE_BUTTONS = [
+    "💳 Принять оплату",
+    "↩️ В меню 🎫 Абонемент",
+]
+
+PASS_PAY_METHOD_BUTTONS = [
+    "💵 Наличные",
+    "🔁 Перевод",
+    "📷 QR-код",
+    "⏳ Отсрочка",
+    "↩️ Назад",
+]
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -346,5 +365,31 @@ def payment_close_date_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[0]), KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[1])],
         [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[2])],
         [KeyboardButton(text=PAYMENT_CLOSE_DATE_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def pass_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PASS_MENU_BUTTONS[0])],
+        [KeyboardButton(text=PASS_MENU_BUTTONS[1])],
+        [KeyboardButton(text=PASS_MENU_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def passes_after_save_menu_kb() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PASS_AFTER_SAVE_BUTTONS[0])],
+        [KeyboardButton(text=PASS_AFTER_SAVE_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def pass_pay_method_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[0]), KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[1])],
+        [KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[2]), KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[3])],
+        [KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[4])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)

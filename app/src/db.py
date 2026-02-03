@@ -336,6 +336,74 @@ def create_group(
         return int(cur.lastrowid)
 
 
+def get_active_pass(
+    db_path: str, client_id: int, group_id: int, on_date: Optional[str] = None
+) -> Optional[Tuple[int, str, str, int, Optional[int], Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        if on_date:
+            cur = conn.execute(
+                """
+                SELECT pass_id, start_date, end_date, is_active, price, comment
+                FROM passes
+                WHERE client_id = ? AND group_id = ? AND is_active = 1
+                  AND start_date <= ? AND end_date >= ?
+                LIMIT 1
+                """,
+                (client_id, group_id, on_date, on_date),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT pass_id, start_date, end_date, is_active, price, comment
+                FROM passes
+                WHERE client_id = ? AND group_id = ? AND is_active = 1
+                LIMIT 1
+                """,
+                (client_id, group_id),
+            )
+        return cur.fetchone()
+
+
+def create_pass(
+    db_path: str,
+    client_id: int,
+    group_id: int,
+    start_date: str,
+    end_date: str,
+    is_active: int,
+    price: Optional[int] = None,
+    comment: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO passes(client_id, group_id, start_date, end_date, is_active, price, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (client_id, group_id, start_date, end_date, is_active, price, comment),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def get_pass_by_id(db_path: str, pass_id: int) -> Optional[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT * FROM passes WHERE pass_id = ? LIMIT 1",
+            (pass_id,),
+        )
+        return cur.fetchone()
+
+
+def get_group_by_id(db_path: str, group_id: int) -> Optional[Tuple[int, str]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT group_id, name FROM groups WHERE group_id = ? LIMIT 1",
+            (group_id,),
+        )
+        return cur.fetchone()
+
+
 def upsert_client_group_active(db_path: str, client_id: int, group_id: int) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute(

@@ -18,10 +18,12 @@ from db import (
     create_payment_pass,
     create_payment_single,
     create_single_visit_booked,
+    create_pass,
     deactivate_admin,
     get_client_by_id,
     get_client_by_phone,
     get_client_by_tg_username,
+    get_active_pass,
     get_or_create_single_visit,
     is_admin_active,
     list_clients_for_attendance,
@@ -56,6 +58,9 @@ from keyboards import (
     PAYMENT_METHOD_BUTTONS,
     PAYMENT_TYPE_BUTTONS,
     DEFER_DUE_DATE_BUTTONS,
+    PASS_AFTER_SAVE_BUTTONS,
+    PASS_MENU_BUTTONS,
+    PASS_PAY_METHOD_BUTTONS,
     SEARCH_MENU_BUTTONS,
     SKIP_BUTTONS,
     add_group_keyboard,
@@ -79,6 +84,9 @@ from keyboards import (
     payment_menu_keyboard,
     payment_method_keyboard,
     payment_type_keyboard,
+    pass_menu_keyboard,
+    passes_after_save_menu_kb,
+    pass_pay_method_keyboard,
     search_menu_keyboard,
     search_results_keyboard,
     skip_keyboard,
@@ -155,6 +163,27 @@ class PaymentStates(StatesGroup):
     close_method = State()
     close_date = State()
     close_confirm = State()
+
+
+class PassStates(StatesGroup):
+    menu = State()
+    action = State()
+    client_method = State()
+    client_phone = State()
+    client_name = State()
+    client_tg = State()
+    client_select = State()
+    group_select = State()
+    confirm = State()
+
+
+class PassAfterSave(StatesGroup):
+    wait_action = State()
+
+
+class PassPayStates(StatesGroup):
+    choose_method = State()
+    enter_amount = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -259,6 +288,19 @@ def _parse_amount(text: str) -> Optional[int]:
     return amount
 
 
+def _last_day_of_month(current: date) -> date:
+    next_month = current.replace(day=28) + timedelta(days=4)
+    return next_month - timedelta(days=next_month.day)
+
+
+def _next_month_range(current: date) -> tuple[date, date]:
+    year = current.year + (1 if current.month == 12 else 0)
+    month = 1 if current.month == 12 else current.month + 1
+    first_next = date(year, month, 1)
+    last_next = _last_day_of_month(first_next)
+    return first_next, last_next
+
+
 def _format_payment_summary(
     client_name: str,
     group_name: str,
@@ -321,6 +363,26 @@ def _format_close_payment_summary(
         f"Метод: {_format_payment_method_label(method)}\n"
         f"Дата оплаты: {pay_date}"
     )
+
+
+def _format_pass_summary(
+    client_name: str,
+    group_name: str,
+    start_date: str,
+    end_date: str,
+    is_active: int,
+) -> str:
+    active_label = "Да" if is_active == 1 else "Нет"
+    return (
+        "Проверьте данные:\n"
+        f"Клиент: {client_name}\n"
+        f"Группа: {group_name}\n"
+        f"Старт: {start_date}\n"
+        f"Конец: {end_date}\n"
+        f"Активный: {active_label}"
+    )
+
+
 
 
 async def _prepare_payment_group_selection(
@@ -1059,7 +1121,7 @@ async def handle_attendance_select_status(message: Message, config: Config, stat
     await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
 
 
-@router.message(F.text == MAIN_MENU_BUTTONS[4])
+@router.message(F.text == MAIN_MENU_BUTTONS[4], StateFilter(None))
 async def handle_payment_menu(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
         await _deny_and_menu(message, config, state)
@@ -1503,6 +1565,9 @@ async def handle_payment_create_confirm(message: Message, config: Config, state:
             accepted_by=accepted_by,
         )
     await state.clear()
+    if data.get("return_to") == "pass_menu":
+        await message.answer("✅ Оплата сохранена", reply_markup=pass_menu_keyboard())
+        return
     await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
 
 
@@ -1783,6 +1848,407 @@ async def handle_payment_close_confirm(message: Message, config: Config, state: 
     await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[5])
+async def handle_pass_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(PassStates.menu)
+    await message.answer("Абонемент", reply_markup=pass_menu_keyboard())
+
+
+@router.message(PassStates.menu)
+async def handle_pass_menu_choice(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == PASS_MENU_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Главное меню", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == PASS_MENU_BUTTONS[0]:
+        await state.update_data(pass_action="issue")
+    elif message.text == PASS_MENU_BUTTONS[1]:
+        await state.update_data(pass_action="extend")
+    else:
+        await message.answer("Выберите действие", reply_markup=pass_menu_keyboard())
+        return
+    await state.set_state(PassStates.client_method)
+    await message.answer("Выберите способ поиска клиента", reply_markup=booking_client_search_keyboard())
+
+
+@router.message(PassStates.client_method)
+async def handle_pass_client_method(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[0]:
+        await state.set_state(PassStates.client_phone)
+        await message.answer("Введите телефон клиента", reply_markup=new_client_phone_keyboard())
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[1]:
+        await state.set_state(PassStates.client_name)
+        await message.answer("Введите имя или часть имени", reply_markup=cancel_keyboard())
+        return
+    if message.text == BOOKING_CLIENT_SEARCH_BUTTONS[2]:
+        await state.set_state(PassStates.client_tg)
+        await message.answer("Введите username (с @ или без)", reply_markup=cancel_keyboard())
+        return
+    await message.answer("Выберите способ поиска клиента", reply_markup=booking_client_search_keyboard())
+
+
+@router.message(PassStates.client_phone)
+async def handle_pass_client_phone(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == NEW_CLIENT_PHONE_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == NEW_CLIENT_PHONE_BUTTONS[1]:
+        await message.answer("Введите телефон вручную")
+        return
+
+    raw_phone = None
+    if message.contact and message.contact.phone_number:
+        raw_phone = message.contact.phone_number
+    elif message.text:
+        raw_phone = message.text
+
+    if not raw_phone:
+        await message.answer("Введите телефон клиента")
+        return
+
+    normalized = _normalize_phone(raw_phone)
+    if not normalized:
+        await message.answer("Не удалось распознать телефон, попробуйте еще раз")
+        return
+
+    client = get_client_by_phone(config.db_path, normalized)
+    if not client:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+
+    await state.update_data(client_id=client[0], client_name=client[1])
+    await state.set_state(PassStates.group_select)
+    await message.answer(
+        "Выберите группу",
+        reply_markup=groups_keyboard([_format_group_label(g[0], g[1]) for g in list_active_groups(config.db_path)]),
+    )
+
+
+@router.message(PassStates.client_name)
+async def handle_pass_client_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите имя или часть имени")
+        return
+
+    results = search_clients_by_name(config.db_path, message.text.strip(), limit=11)
+    if len(results) == 0:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+    if len(results) == 1:
+        await state.update_data(client_id=results[0][0], client_name=results[0][1])
+        await state.set_state(PassStates.group_select)
+        await message.answer(
+            "Выберите группу",
+            reply_markup=groups_keyboard([_format_group_label(g[0], g[1]) for g in list_active_groups(config.db_path)]),
+        )
+        return
+    if len(results) > 10:
+        await message.answer("Слишком много результатов, уточните запрос")
+        return
+
+    labels = [f"{row[1]} ({row[2]})" for row in results]
+    mapping = {label: row[0] for label, row in zip(labels, results)}
+    await state.update_data(search_results=mapping)
+    await state.set_state(PassStates.client_select)
+    await message.answer("Выберите клиента", reply_markup=search_results_keyboard(labels))
+
+
+@router.message(PassStates.client_tg)
+async def handle_pass_client_tg(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите username")
+        return
+
+    normalized = _normalize_username(message.text)
+    if not normalized:
+        await message.answer("Введите username")
+        return
+
+    client = get_client_by_tg_username(config.db_path, normalized)
+    if not client:
+        await state.clear()
+        await message.answer("Не найдено", reply_markup=not_found_keyboard())
+        return
+
+    await state.update_data(client_id=client[0], client_name=client[1])
+    await state.set_state(PassStates.group_select)
+    await message.answer(
+        "Выберите группу",
+        reply_markup=groups_keyboard([_format_group_label(g[0], g[1]) for g in list_active_groups(config.db_path)]),
+    )
+
+
+@router.message(PassStates.client_select)
+async def handle_pass_client_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    mapping = data.get("search_results", {})
+    if message.text not in mapping:
+        await message.answer("Выберите клиента из списка")
+        return
+    client_id = int(mapping[message.text])
+    client = get_client_by_id(config.db_path, client_id)
+    if not client:
+        await state.clear()
+        await message.answer("Клиент не найден", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await state.update_data(client_id=client_id, client_name=client[1])
+    await state.set_state(PassStates.group_select)
+    await message.answer(
+        "Выберите группу",
+        reply_markup=groups_keyboard([_format_group_label(g[0], g[1]) for g in list_active_groups(config.db_path)]),
+    )
+
+
+@router.message(PassStates.group_select)
+async def handle_pass_group_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    groups = list_active_groups(config.db_path)
+    if not groups:
+        await state.clear()
+        await message.answer("Групп пока нет", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    mapping = { _format_group_label(g[0], g[1]): g[0] for g in groups }
+    names = { g[0]: g[1] for g in groups }
+    if message.text not in mapping:
+        await message.answer("Выберите группу из списка")
+        return
+    group_id = int(mapping[message.text])
+    group_name = names.get(group_id, message.text)
+    data = await state.get_data()
+    client_id = int(data.get("client_id"))
+    today_str = date.today().strftime("%Y-%m-%d")
+    active_pass = get_active_pass(config.db_path, client_id, group_id, today_str)
+    action = data.get("pass_action")
+    if action == "issue":
+        if active_pass:
+            await state.clear()
+            await message.answer(
+                f"У клиента уже есть активный абонемент до {active_pass[2]}",
+                reply_markup=_main_menu_reply_markup(message, config),
+            )
+            return
+        start_date = today_str
+        end_date = _last_day_of_month(date.today()).strftime("%Y-%m-%d")
+        await state.update_data(
+            group_id=group_id,
+            group_name=group_name,
+            pass_start=start_date,
+            pass_end=end_date,
+            pass_active=1,
+        )
+        summary = _format_pass_summary(
+            client_name=data.get("client_name"),
+            group_name=group_name,
+            start_date=start_date,
+            end_date=end_date,
+            is_active=1,
+        )
+        await state.set_state(PassStates.confirm)
+        await message.answer(summary, reply_markup=confirm_keyboard())
+        return
+
+    if not active_pass:
+        await state.clear()
+        await message.answer(
+            "Нет активного абонемента — сначала 🎫 Выдать",
+            reply_markup=_main_menu_reply_markup(message, config),
+        )
+        return
+
+    next_start, next_end = _next_month_range(date.today())
+    await state.update_data(
+        group_id=group_id,
+        group_name=group_name,
+        pass_start=next_start.strftime("%Y-%m-%d"),
+        pass_end=next_end.strftime("%Y-%m-%d"),
+        pass_active=0,
+    )
+    summary = _format_pass_summary(
+        client_name=data.get("client_name"),
+        group_name=group_name,
+        start_date=next_start.strftime("%Y-%m-%d"),
+        end_date=next_end.strftime("%Y-%m-%d"),
+        is_active=0,
+    )
+    await state.set_state(PassStates.confirm)
+    await message.answer(summary, reply_markup=confirm_keyboard())
+
+
+@router.message(PassStates.confirm)
+async def handle_pass_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text not in CONFIRM_BUTTONS:
+        await message.answer("Выберите действие", reply_markup=confirm_keyboard())
+        return
+    if message.text == CONFIRM_BUTTONS[1]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    data = await state.get_data()
+    try:
+        pass_id = create_pass(
+            config.db_path,
+            client_id=int(data.get("client_id")),
+            group_id=int(data.get("group_id")),
+            start_date=data.get("pass_start"),
+            end_date=data.get("pass_end"),
+            is_active=int(data.get("pass_active")),
+        )
+    except sqlite3.IntegrityError:
+        await state.clear()
+        await message.answer(
+            "У клиента уже есть активный абонемент",
+            reply_markup=_main_menu_reply_markup(message, config),
+        )
+        return
+    upsert_client_group_active(
+        config.db_path,
+        client_id=int(data.get("client_id")),
+        group_id=int(data.get("group_id")),
+    )
+    action = data.get("pass_action")
+    status_label = "активный" if int(data.get("pass_active")) == 1 else "неактивный (будущий)"
+    header = "✅ Абонемент выдан" if action == "issue" else "✅ Абонемент продлён (создан на следующий месяц)"
+    text = (
+        f"{header}\n"
+        f"Клиент: {data.get('client_name')}\n"
+        f"Группа: {data.get('group_name')}\n"
+        f"Даты: {data.get('pass_start')} – {data.get('pass_end')}\n"
+        f"Статус: {status_label}"
+    )
+    await state.set_state(PassAfterSave.wait_action)
+    await state.update_data(
+        client_id=int(data.get("client_id")),
+        client_name=data.get("client_name"),
+        group_id=int(data.get("group_id")),
+        group_name=data.get("group_name"),
+        pass_id=pass_id,
+        purpose="pass",
+    )
+    await message.answer(text, reply_markup=passes_after_save_menu_kb())
+
+
+@router.message(PassAfterSave.wait_action)
+async def handle_pass_after_save_action(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == PASS_AFTER_SAVE_BUTTONS[0]:
+        await state.set_state(PassPayStates.choose_method)
+        await message.answer("Выберите способ оплаты:", reply_markup=pass_pay_method_keyboard())
+        return
+    if message.text == PASS_AFTER_SAVE_BUTTONS[1]:
+        await state.clear()
+        await state.set_state(PassStates.menu)
+        await message.answer("Абонемент", reply_markup=pass_menu_keyboard())
+        return
+    await message.answer("Выберите действие кнопками меню ниже", reply_markup=passes_after_save_menu_kb())
+
+
+@router.message(PassPayStates.choose_method)
+async def handle_pass_pay_choose_method(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == PASS_PAY_METHOD_BUTTONS[4]:
+        await state.clear()
+        await state.set_state(PassStates.menu)
+        await message.answer("Абонемент", reply_markup=pass_menu_keyboard())
+        return
+    method_map = {
+        PASS_PAY_METHOD_BUTTONS[0]: "cash",
+        PASS_PAY_METHOD_BUTTONS[1]: "transfer",
+        PASS_PAY_METHOD_BUTTONS[2]: "qr",
+        PASS_PAY_METHOD_BUTTONS[3]: "defer",
+    }
+    if message.text not in method_map:
+        await message.answer("Выберите способ оплаты:", reply_markup=pass_pay_method_keyboard())
+        return
+    await state.update_data(method=method_map[message.text])
+    await state.set_state(PassPayStates.enter_amount)
+    await message.answer("Введите сумму (числом):")
+
+
+@router.message(PassPayStates.enter_amount)
+async def handle_pass_pay_amount(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    amount = _parse_amount(message.text or "")
+    if amount is None:
+        await message.answer("Введите сумму (числом):")
+        return
+    data = await state.get_data()
+    method = data.get("method")
+    status = "deferred" if method == "defer" else "paid"
+    create_payment_pass(
+        config.db_path,
+        client_id=int(data.get("client_id")),
+        group_id=int(data.get("group_id")),
+        pass_id=int(data.get("pass_id")),
+        amount=amount,
+        method=method,
+        status=status,
+        due_date=None,
+        accepted_by=message.from_user.id if message.from_user else None,
+    )
+    await state.clear()
+    await message.answer(
+        f"✅ Оплата сохранена: {amount} ({_format_payment_method_label(method)})",
+        reply_markup=pass_menu_keyboard(),
+    )
+
+
 @router.message(F.text == MAIN_MENU_BUTTONS[1])
 async def handle_search_menu(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
@@ -1968,6 +2434,7 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     & (F.text != MAIN_MENU_BUTTONS[2])
     & (F.text != MAIN_MENU_BUTTONS[3])
     & (F.text != MAIN_MENU_BUTTONS[4])
+    & (F.text != MAIN_MENU_BUTTONS[5])
 )
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
