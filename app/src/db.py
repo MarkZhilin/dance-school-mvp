@@ -591,3 +591,25 @@ def close_deferred_payment(
             (new_method, pay_date, accepted_by, pay_id),
         )
         conn.commit()
+
+
+def get_defer_summary(
+    db_path: str, client_id: int, today: str
+) -> Tuple[int, int, Optional[str], int]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS cnt,
+              COALESCE(SUM(amount), 0) AS total_amount,
+              MIN(due_date) AS nearest_due,
+              COALESCE(SUM(CASE WHEN due_date IS NOT NULL AND date(due_date) < date(?) THEN 1 ELSE 0 END), 0) AS overdue_cnt
+            FROM payments
+            WHERE client_id = ? AND method = 'defer' AND status = 'deferred'
+            """,
+            (today, client_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        return 0, 0, None, 0
+    return int(row[0] or 0), int(row[1] or 0), row[2], int(row[3] or 0)

@@ -32,6 +32,7 @@ from db import (
     search_clients_by_name,
     close_deferred_payment,
     get_payment_by_id,
+    get_defer_summary,
     upsert_client_group_active,
     upsert_visit_status,
     upsert_admin,
@@ -349,11 +350,12 @@ def _format_client_card(
     tg_username: Optional[str],
     birth_date: Optional[str],
     comment: Optional[str],
+    defer_summary: Optional[tuple[int, int, Optional[str], int]] = None,
 ) -> str:
     tg_value = tg_username or "—"
     if tg_value != "—" and not tg_value.startswith("@"):
         tg_value = f"@{tg_value}"
-    return (
+    card = (
         "Карточка клиента:\n"
         f"ID: {client_id}\n"
         f"ФИО: {full_name}\n"
@@ -362,6 +364,14 @@ def _format_client_card(
         f"Дата рождения: {birth_date or '—'}\n"
         f"Комментарий: {comment or '—'}"
     )
+    if defer_summary:
+        cnt, total_amount, nearest_due, overdue_cnt = defer_summary
+        if cnt > 0:
+            due_label = nearest_due or "без срока"
+            card += f"\n\n🕒 Отсрочка: {cnt} / {total_amount} ₽, Ближайший срок: {due_label}"
+            if overdue_cnt > 0:
+                card += f"\n⚠️ Просрочено: {overdue_cnt}"
+    return card
 
 
 async def _show_client_card(message: Message, config: Config, client, state: Optional[FSMContext]) -> None:
@@ -371,6 +381,8 @@ async def _show_client_card(message: Message, config: Config, client, state: Opt
     if state is not None:
         await state.clear()
         await state.set_state(SearchStates.card)
+    today = date.today().strftime("%Y-%m-%d")
+    defer_summary = get_defer_summary(config.db_path, client[0], today)
     card = _format_client_card(
         client_id=client[0],
         full_name=client[1],
@@ -378,6 +390,7 @@ async def _show_client_card(message: Message, config: Config, client, state: Opt
         tg_username=client[3],
         birth_date=client[4],
         comment=client[5],
+        defer_summary=defer_summary,
     )
     await message.answer(card, reply_markup=client_actions_keyboard())
 
