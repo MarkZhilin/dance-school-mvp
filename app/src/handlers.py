@@ -211,6 +211,7 @@ REPORT_UNPAID_SINGLE_LIMIT = 20
 
 
 class AdminStates(StatesGroup):
+    menu = State()
     add_tg_id = State()
     add_name = State()
     disable_tg_id = State()
@@ -3714,10 +3715,11 @@ async def handle_admin_menu(message: Message, config: Config, state: FSMContext)
         await state.clear()
         return
     await state.clear()
+    await state.set_state(AdminStates.menu)
     await message.answer("Меню админов", reply_markup=admin_menu_keyboard())
 
 
-@router.message(F.text == ADMIN_MENU_BUTTONS[0])
+@router.message(AdminStates.menu, F.text == ADMIN_MENU_BUTTONS[0])
 async def handle_admin_add_start(message: Message, config: Config, state: FSMContext) -> None:
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
@@ -3765,7 +3767,7 @@ async def handle_admin_add_name(message: Message, config: Config, state: FSMCont
     await message.answer("Админ сохранен и активирован ✅", reply_markup=admin_menu_keyboard())
 
 
-@router.message(F.text == ADMIN_MENU_BUTTONS[1])
+@router.message(AdminStates.menu, F.text == ADMIN_MENU_BUTTONS[1])
 async def handle_admin_disable_start(message: Message, config: Config, state: FSMContext) -> None:
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
@@ -3859,7 +3861,7 @@ async def handle_admin_manage_action(message: Message, config: Config, state: FS
     await message.answer("Выберите действие", reply_markup=admin_manage_keyboard(is_active=bool(data.get("manage_admin_active", 1))))
 
 
-@router.message(F.text == ADMIN_MENU_BUTTONS[2])
+@router.message(AdminStates.menu, F.text == ADMIN_MENU_BUTTONS[2])
 async def handle_admin_list(message: Message, config: Config, state: FSMContext) -> None:
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
@@ -3878,7 +3880,7 @@ async def handle_admin_list(message: Message, config: Config, state: FSMContext)
     await message.answer("Выберите админа", reply_markup=admin_select_keyboard(labels))
 
 
-@router.message(F.text == ADMIN_MENU_BUTTONS[3])
+@router.message(AdminStates.menu, F.text == ADMIN_MENU_BUTTONS[3])
 async def handle_admin_back(message: Message, config: Config, state: FSMContext) -> None:
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
