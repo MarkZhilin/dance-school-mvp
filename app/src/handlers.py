@@ -979,6 +979,7 @@ async def _show_client_card(message: Message, config: Config, client, state: Opt
     if state is not None:
         await state.clear()
         await state.set_state(SearchStates.card)
+        await state.update_data(client_id=client[0], client_name=client[1], client_phone=client[2])
     today = date.today().strftime("%Y-%m-%d")
     defer_summary = get_defer_summary(config.db_path, client[0], today)
     card = _format_client_card(
@@ -1584,6 +1585,19 @@ async def handle_attendance_select_date(message: Message, config: Config, state:
         return
     labels = [_format_attendance_client_label(row[1], row[2]) for row in clients]
     mapping = {label: row[0] for label, row in zip(labels, clients)}
+    prefill_id = data.get("prefill_client_id")
+    if prefill_id:
+        matched = next((row for row in clients if row[0] == int(prefill_id)), None)
+        if matched:
+            await state.update_data(
+                attendance_date=selected_date,
+                client_map=mapping,
+                client_id=int(prefill_id),
+                client_name=matched[1],
+            )
+            await state.set_state(AttendanceStates.select_status)
+            await message.answer("Отметить посещение", reply_markup=attendance_status_keyboard())
+            return
     await state.update_data(attendance_date=selected_date, client_map=mapping)
     await state.set_state(AttendanceStates.select_client)
     await message.answer("Выберите клиента", reply_markup=search_results_keyboard(labels))
@@ -1702,6 +1716,12 @@ async def handle_payment_create_type(message: Message, config: Config, state: FS
         await state.update_data(payment_type="pass")
     else:
         await message.answer("Выберите тип оплаты", reply_markup=payment_type_keyboard())
+        return
+    data = await state.get_data()
+    prefill_id = data.get("prefill_client_id")
+    if prefill_id:
+        await state.update_data(client_id=prefill_id, client_name=data.get("prefill_client_name"))
+        await _prepare_payment_group_selection(message, config, state)
         return
     await state.set_state(PaymentStates.create_client_method)
     await message.answer("Выберите способ поиска клиента", reply_markup=booking_client_search_keyboard())
@@ -3640,10 +3660,54 @@ async def handle_client_back_to_search(message: Message, config: Config, state: 
 
 
 @router.message(SearchStates.card, F.text.in_(CLIENT_ACTION_BUTTONS[:4]))
-async def handle_client_actions_stub(message: Message) -> None:
+async def handle_client_actions(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
     if not message.text:
         return
-    await message.answer(f"В разработке: {message.text}")
+    data = await state.get_data()
+    client_id = data.get("client_id")
+    client_name = data.get("client_name")
+    if not client_id:
+        await message.answer("Клиент не выбран")
+        return
+    if message.text == CLIENT_ACTION_BUTTONS[0]:
+        await state.clear()
+        await state.set_state(BookingStates.select_type)
+        await state.update_data(client_id=client_id, client_name=client_name)
+        await message.answer("Выберите тип записи", reply_markup=booking_type_keyboard())
+        return
+    if message.text == CLIENT_ACTION_BUTTONS[1]:
+        groups = list_active_groups(config.db_path)
+        if not groups:
+            await state.clear()
+            await message.answer("Групп пока нет", reply_markup=_main_menu_reply_markup(message, config))
+            return
+        labels = [_format_group_label(group[0], group[1]) for group in groups]
+        mapping = {label: group[0] for label, group in zip(labels, groups)}
+        await state.clear()
+        await state.set_state(AttendanceStates.select_group)
+        await state.update_data(
+            group_map=mapping,
+            group_names={group[0]: group[1] for group in groups},
+            prefill_client_id=client_id,
+            prefill_client_name=client_name,
+        )
+        await message.answer("Выберите группу", reply_markup=groups_keyboard(labels))
+        return
+    if message.text == CLIENT_ACTION_BUTTONS[2]:
+        await state.clear()
+        await state.set_state(PaymentStates.create_type)
+        await state.update_data(prefill_client_id=client_id, prefill_client_name=client_name)
+        await message.answer("Выберите тип оплаты", reply_markup=payment_type_keyboard())
+        return
+    if message.text == CLIENT_ACTION_BUTTONS[3]:
+        await state.clear()
+        await state.set_state(PassStates.menu)
+        await state.update_data(prefill_client_id=client_id, prefill_client_name=client_name)
+        await message.answer("Абонемент", reply_markup=pass_menu_keyboard())
+        return
 
 
 @router.message(SearchStates.card, F.text == CLIENT_ACTION_BUTTONS[5])
