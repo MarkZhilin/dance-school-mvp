@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 
 from config import Config
 from db import (
@@ -49,6 +49,20 @@ from db import (
     upsert_visit_status,
     upsert_admin,
 )
+from reporting import (
+    build_excel_report,
+    count_single_visits,
+    count_single_visits_without_payment,
+    get_attendance_summary,
+    get_deferred_summary,
+    get_expense_summary,
+    get_revenue_summary,
+    list_active_passes_today,
+    list_attended_today_by_group,
+    list_clients_without_active_pass,
+    list_passes_expiring,
+    list_single_visits_without_payment,
+)
 from keyboards import (
     ADMIN_MENU_BUTTONS,
     ADD_GROUP_BUTTONS,
@@ -84,6 +98,10 @@ from keyboards import (
     PASS_AFTER_SAVE_BUTTONS,
     PASS_MENU_BUTTONS,
     PASS_PAY_METHOD_BUTTONS,
+    REPORT_ACTION_BUTTONS,
+    REPORT_ATTENDANCE_TODAY_BUTTON,
+    REPORT_MENU_BUTTONS,
+    REPORT_PERIOD_BUTTONS,
     SEARCH_MENU_BUTTONS,
     SKIP_BUTTONS,
     add_group_keyboard,
@@ -101,6 +119,10 @@ from keyboards import (
     main_menu_keyboard,
     new_client_phone_keyboard,
     not_found_keyboard,
+    report_actions_keyboard,
+    report_date_input_keyboard,
+    report_menu_keyboard,
+    report_period_keyboard,
     payment_close_date_keyboard,
     payment_close_method_keyboard,
     payment_date_keyboard,
@@ -128,6 +150,9 @@ from keyboards import (
 )
 
 router = Router()
+
+DEFER_OVERDUE_DAYS = 7
+REPORT_UNPAID_SINGLE_LIMIT = 20
 
 
 class AdminStates(StatesGroup):
@@ -247,6 +272,15 @@ class ExpenseStates(StatesGroup):
     category_rename_name = State()
     category_hide_select = State()
     category_show_hidden_select = State()
+
+
+class ReportStates(StatesGroup):
+    menu = State()
+    view = State()
+    period_menu = State()
+    period_custom_from = State()
+    period_custom_to = State()
+    attendance_today_group = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -372,6 +406,34 @@ def _current_week_range(today_date: date) -> tuple[str, str]:
 def _current_month_range(today_date: date) -> tuple[str, str]:
     start = today_date.replace(day=1)
     return start.strftime("%Y-%m-%d"), today_date.strftime("%Y-%m-%d")
+
+
+def _previous_month_range(today_date: date) -> tuple[str, str]:
+    first_this = today_date.replace(day=1)
+    last_prev = first_this - timedelta(days=1)
+    first_prev = last_prev.replace(day=1)
+    return first_prev.strftime("%Y-%m-%d"), last_prev.strftime("%Y-%m-%d")
+
+
+async def _ensure_report_period(state: FSMContext, today_date: date) -> tuple[str, str, str]:
+    data = await state.get_data()
+    date_from = data.get("report_date_from")
+    date_to = data.get("report_date_to")
+    label = data.get("report_period_label")
+    if not date_from or not date_to:
+        date_from, date_to = _current_month_range(today_date)
+        label = "Этот месяц"
+        await state.update_data(
+            report_date_from=date_from,
+            report_date_to=date_to,
+            report_period_label=label,
+        )
+    return str(date_from), str(date_to), str(label or "")
+
+
+def _period_label(date_from: str, date_to: str, label: Optional[str]) -> str:
+    base = label or f"{date_from} — {date_to}"
+    return f"Период: {base} ({date_from} — {date_to})"
 
 
 def _expense_categories_page(
@@ -536,6 +598,123 @@ def _active_expense_categories_text(categories: list[tuple[int, str, int]]) -> s
         return "Активных категорий нет"
     lines = [f"{row[0]}) {row[1]}" for row in categories]
     return "Активные категории:\n" + "\n".join(lines)
+
+
+def _format_revenue_report(period_line: str, summary) -> str:
+    return (
+        f"{period_line}\n"
+        f"Выручка за период: {summary.total} ₽\n"
+        f"Наличные: {summary.cash} ₽\n"
+        f"Перевод: {summary.transfer} ₽\n"
+        f"QR: {summary.qr} ₽\n"
+        f"Платежей: {summary.count}"
+    )
+
+
+def _format_expense_report(period_line: str, summary) -> str:
+    lines = [
+        f"{period_line}",
+        f"Расходы за период: {summary.total} ₽",
+        f"Наличные: {summary.cash} ₽ / Перевод: {summary.transfer} ₽ / QR: {summary.qr} ₽",
+    ]
+    if summary.categories:
+        lines.append("Категории:")
+        for name, amount in summary.categories:
+            lines.append(f"- {name}: {amount} ₽")
+        if summary.other_amount:
+            lines.append(f"- Прочие: {summary.other_amount} ₽")
+    return "\n".join(lines)
+
+
+def _format_profit_report(period_line: str, revenue_total: int, expense_total: int) -> str:
+    profit = revenue_total - expense_total
+    return (
+        f"{period_line}\n"
+        f"Выручка: {revenue_total} ₽\n"
+        f"Расходы: {expense_total} ₽\n"
+        f"Прибыль: {profit} ₽"
+    )
+
+
+def _format_attendance_report(period_line: str, summary) -> str:
+    return (
+        f"{period_line}\n"
+        "Посещаемость:\n"
+        f"attended: {summary.attended}\n"
+        f"noshow: {summary.noshow}\n"
+        f"cancelled: {summary.cancelled}\n"
+        f"booked: {summary.booked}"
+    )
+
+
+def _format_passes_report(
+    today_label: str,
+    active_passes: list[tuple[str, str, str, str]],
+    expiring: list[tuple[str, str, str]],
+    missing: list[tuple[str, str]],
+) -> str:
+    lines = [
+        f"Дата: {today_label}",
+        f"Активные абонементы: {len(active_passes)}",
+        f"Заканчиваются в ближайшие 7 дней: {len(expiring)}",
+        f"Постоянные без активного абонемента: {len(missing)}",
+    ]
+    if expiring:
+        lines.append("Заканчиваются:")
+        for full_name, group_name, end_date in expiring:
+            lines.append(f"- {full_name} / {group_name} до {end_date}")
+    if missing:
+        lines.append("Без активного абонемента:")
+        for full_name, group_name in missing:
+            lines.append(f"- {full_name} / {group_name}")
+    return "\n".join(lines)
+
+
+def _format_single_visits_report(
+    period_line: str,
+    total_single: int,
+    total_unpaid: int,
+    unpaid: list[tuple[str, str, str, str]],
+    unpaid_limit: int,
+) -> str:
+    lines = [
+        f"{period_line}",
+        f"Разовые визиты (booked/attended): {total_single}",
+        f"Разовые без оплаты: {total_unpaid}",
+    ]
+    if unpaid:
+        lines.append("Без оплаты:")
+        for visit_date, full_name, group_name, status in unpaid:
+            lines.append(f"- {visit_date} / {full_name} / {group_name} / {status}")
+        if total_unpaid > len(unpaid):
+            lines.append(f"Показаны первые {unpaid_limit}")
+    return "\n".join(lines)
+
+
+def _format_deferred_report(
+    period_line: str,
+    total_count: int,
+    total_amount: int,
+    latest: list[tuple[int, str, str, int, str, Optional[str]]],
+    overdue: list[tuple[int, str, str, int, str]],
+    overdue_days: int,
+) -> str:
+    lines = [
+        f"{period_line}",
+        f"Отсрочек за период: {total_count} / {total_amount} ₽",
+    ]
+    if latest:
+        lines.append("Последние 10 отсрочек:")
+        for pay_id, client_name, group_name, amount, created_date, due_date in latest:
+            due_label = due_date or "—"
+            lines.append(
+                f"- #{pay_id} {client_name} / {group_name} / {amount} ₽ / {created_date} / до {due_label}"
+            )
+    if overdue:
+        lines.append(f"Просроченные (старше {overdue_days} дней):")
+        for pay_id, client_name, group_name, amount, created_date in overdue:
+            lines.append(f"- #{pay_id} {client_name} / {group_name} / {amount} ₽ / {created_date}")
+    return "\n".join(lines)
 
 
 
@@ -3277,6 +3456,17 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[7])
+async def handle_reports_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(ReportStates.menu)
+    await _ensure_report_period(state, date.today())
+    await message.answer("Отчеты", reply_markup=report_menu_keyboard())
+
+
 @router.message(
     F.text.in_(MAIN_MENU_BUTTONS)
     & (F.text != MAIN_MENU_BUTTONS[0])
@@ -3286,6 +3476,7 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     & (F.text != MAIN_MENU_BUTTONS[4])
     & (F.text != MAIN_MENU_BUTTONS[5])
     & (F.text != MAIN_MENU_BUTTONS[6])
+    & (F.text != MAIN_MENU_BUTTONS[7])
 )
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
@@ -3394,3 +3585,326 @@ async def handle_admin_back(message: Message, config: Config, state: FSMContext)
         "Главное меню",
         reply_markup=_main_menu_reply_markup(message, config),
     )
+
+
+async def _show_report_menu(message: Message, config: Config, state: FSMContext) -> None:
+    await state.set_state(ReportStates.menu)
+    await _ensure_report_period(state, date.today())
+    await message.answer("Отчеты", reply_markup=report_menu_keyboard())
+
+
+async def _show_report(message: Message, config: Config, state: FSMContext, report_key: str) -> None:
+    await state.set_state(ReportStates.view)
+    await state.update_data(report_last=report_key)
+    today_date = date.today()
+    date_from, date_to, label = await _ensure_report_period(state, today_date)
+    period_line = _period_label(date_from, date_to, label)
+
+    if report_key == "revenue":
+        summary = get_revenue_summary(config.db_path, date_from, date_to)
+        text = _format_revenue_report(period_line, summary)
+    elif report_key == "expenses":
+        summary = get_expense_summary(config.db_path, date_from, date_to)
+        text = _format_expense_report(period_line, summary)
+    elif report_key == "profit":
+        revenue = get_revenue_summary(config.db_path, date_from, date_to)
+        expenses = get_expense_summary(config.db_path, date_from, date_to)
+        text = _format_profit_report(period_line, revenue.total, expenses.total)
+    elif report_key == "attendance":
+        summary = get_attendance_summary(config.db_path, date_from, date_to)
+        text = _format_attendance_report(period_line, summary)
+    elif report_key == "passes":
+        today_str = today_date.strftime("%Y-%m-%d")
+        expiring_from = today_str
+        expiring_to = (today_date + timedelta(days=7)).strftime("%Y-%m-%d")
+        active_passes = list_active_passes_today(config.db_path, today_str)
+        expiring = list_passes_expiring(config.db_path, expiring_from, expiring_to)
+        missing = list_clients_without_active_pass(config.db_path, today_str)
+        text = _format_passes_report(today_str, active_passes, expiring, missing)
+    elif report_key == "singles":
+        total_single = count_single_visits(config.db_path, date_from, date_to)
+        total_unpaid = count_single_visits_without_payment(config.db_path, date_from, date_to)
+        unpaid = list_single_visits_without_payment(
+            config.db_path, date_from, date_to, limit=REPORT_UNPAID_SINGLE_LIMIT
+        )
+        text = _format_single_visits_report(
+            period_line, total_single, total_unpaid, unpaid, REPORT_UNPAID_SINGLE_LIMIT
+        )
+    elif report_key == "defers":
+        today_str = today_date.strftime("%Y-%m-%d")
+        total_count, total_amount, latest, overdue = get_deferred_summary(
+            config.db_path, date_from, date_to, today_str, DEFER_OVERDUE_DAYS
+        )
+        text = _format_deferred_report(period_line, total_count, total_amount, latest, overdue, DEFER_OVERDUE_DAYS)
+    else:
+        text = "Отчет в разработке"
+
+    include_attendance = report_key == "attendance"
+    await message.answer(text, reply_markup=report_actions_keyboard(include_attendance_today=include_attendance))
+
+
+async def _show_last_report_or_menu(message: Message, config: Config, state: FSMContext) -> None:
+    data = await state.get_data()
+    report_last = data.get("report_last")
+    if report_last:
+        await _show_report(message, config, state, report_last)
+    else:
+        await _show_report_menu(message, config, state)
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[0])
+async def handle_report_revenue(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "revenue")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[1])
+async def handle_report_expenses(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "expenses")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[2])
+async def handle_report_profit(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "profit")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[3])
+async def handle_report_attendance(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "attendance")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[4])
+async def handle_report_passes(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "passes")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[5])
+async def handle_report_singles(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "singles")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[6])
+async def handle_report_defers(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report(message, config, state, "defers")
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[7])
+async def handle_report_excel(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    today_date = date.today()
+    date_from, date_to, _ = await _ensure_report_period(state, today_date)
+    today_str = today_date.strftime("%Y-%m-%d")
+    data = build_excel_report(config.db_path, date_from, date_to, today_str, DEFER_OVERDUE_DAYS)
+    filename = f"report_{date_from}__{date_to}.xlsx"
+
+    owner_file = BufferedInputFile(data, filename=filename)
+    requester_file = BufferedInputFile(data, filename=filename)
+
+    if message.from_user and message.from_user.id != config.owner_tg_user_id:
+        await message.bot.send_document(
+            config.owner_tg_user_id,
+            owner_file,
+            caption=f"Отчет {date_from} — {date_to}",
+        )
+    await message.answer_document(
+        requester_file,
+        caption=f"Отчет {date_from} — {date_to}",
+        reply_markup=report_menu_keyboard(),
+    )
+
+
+@router.message(ReportStates.menu, F.text == REPORT_MENU_BUTTONS[8])
+async def handle_report_back_to_main(message: Message, config: Config, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Главное меню", reply_markup=_main_menu_reply_markup(message, config))
+
+
+@router.message(ReportStates.view, F.text == REPORT_ACTION_BUTTONS[0])
+async def handle_report_period_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.set_state(ReportStates.period_menu)
+    await message.answer("Выберите период", reply_markup=report_period_keyboard())
+
+
+@router.message(ReportStates.view, F.text == REPORT_ACTION_BUTTONS[1])
+async def handle_report_view_back(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_report_menu(message, config, state)
+
+
+@router.message(ReportStates.view, F.text == REPORT_ATTENDANCE_TODAY_BUTTON)
+async def handle_report_attendance_today_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    if data.get("report_last") != "attendance":
+        await message.answer("Сначала откройте отчет по посещаемости")
+        return
+    groups = list_active_groups(config.db_path)
+    if not groups:
+        await message.answer("Групп пока нет", reply_markup=report_actions_keyboard(include_attendance_today=True))
+        return
+    labels = [_format_group_label(group[0], group[1]) for group in groups]
+    mapping = {label: group[0] for label, group in zip(labels, groups)}
+    await state.update_data(report_group_map=mapping, report_group_names={group[0]: group[1] for group in groups})
+    await state.set_state(ReportStates.attendance_today_group)
+    await message.answer("Выберите группу", reply_markup=groups_keyboard(labels))
+
+
+@router.message(ReportStates.period_menu)
+async def handle_report_period_choice(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text:
+        await message.answer("Выберите период", reply_markup=report_period_keyboard())
+        return
+    today_date = date.today()
+    if message.text == REPORT_PERIOD_BUTTONS[0]:
+        date_from, date_to = _current_month_range(today_date)
+        label = "Этот месяц"
+        await state.update_data(
+            report_date_from=date_from, report_date_to=date_to, report_period_label=label
+        )
+        await _show_last_report_or_menu(message, config, state)
+        return
+    if message.text == REPORT_PERIOD_BUTTONS[1]:
+        date_from, date_to = _previous_month_range(today_date)
+        label = "Прошлый месяц"
+        await state.update_data(
+            report_date_from=date_from, report_date_to=date_to, report_period_label=label
+        )
+        await _show_last_report_or_menu(message, config, state)
+        return
+    if message.text == REPORT_PERIOD_BUTTONS[2]:
+        date_from, date_to = _current_week_range(today_date)
+        label = "Эта неделя"
+        await state.update_data(
+            report_date_from=date_from, report_date_to=date_to, report_period_label=label
+        )
+        await _show_last_report_or_menu(message, config, state)
+        return
+    if message.text == REPORT_PERIOD_BUTTONS[3]:
+        today_str = today_date.strftime("%Y-%m-%d")
+        await state.update_data(
+            report_date_from=today_str, report_date_to=today_str, report_period_label="Сегодня"
+        )
+        await _show_last_report_or_menu(message, config, state)
+        return
+    if message.text == REPORT_PERIOD_BUTTONS[4]:
+        await state.set_state(ReportStates.period_custom_from)
+        await message.answer("Введите дату начала (YYYY-MM-DD)", reply_markup=report_date_input_keyboard())
+        return
+    if message.text == REPORT_PERIOD_BUTTONS[5]:
+        await state.set_state(ReportStates.view)
+        await _show_last_report_or_menu(message, config, state)
+        return
+    await message.answer("Выберите период", reply_markup=report_period_keyboard())
+
+
+@router.message(ReportStates.period_custom_from)
+async def handle_report_period_custom_from(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text:
+        await message.answer("Введите дату начала (YYYY-MM-DD)", reply_markup=report_date_input_keyboard())
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ReportStates.period_menu)
+        await message.answer("Выберите период", reply_markup=report_period_keyboard())
+        return
+    parsed = _parse_iso_date(message.text)
+    if not parsed:
+        await message.answer("Неверный формат даты, пример: 2026-02-04")
+        return
+    await state.update_data(report_custom_from=parsed)
+    await state.set_state(ReportStates.period_custom_to)
+    await message.answer("Введите дату окончания (YYYY-MM-DD)", reply_markup=report_date_input_keyboard())
+
+
+@router.message(ReportStates.period_custom_to)
+async def handle_report_period_custom_to(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text:
+        await message.answer("Введите дату окончания (YYYY-MM-DD)", reply_markup=report_date_input_keyboard())
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ReportStates.period_menu)
+        await message.answer("Выберите период", reply_markup=report_period_keyboard())
+        return
+    parsed = _parse_iso_date(message.text)
+    if not parsed:
+        await message.answer("Неверный формат даты, пример: 2026-02-04")
+        return
+    data = await state.get_data()
+    date_from = data.get("report_custom_from")
+    if not date_from:
+        await state.set_state(ReportStates.period_custom_from)
+        await message.answer("Введите дату начала (YYYY-MM-DD)", reply_markup=report_date_input_keyboard())
+        return
+    if parsed < date_from:
+        await message.answer("Дата окончания не может быть раньше даты начала")
+        return
+    await state.update_data(
+        report_date_from=date_from,
+        report_date_to=parsed,
+        report_period_label="Выбранный период",
+    )
+    await _show_last_report_or_menu(message, config, state)
+
+
+@router.message(ReportStates.attendance_today_group)
+async def handle_report_attendance_today_group(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "❌ Отмена":
+        await state.set_state(ReportStates.view)
+        await _show_last_report_or_menu(message, config, state)
+        return
+    data = await state.get_data()
+    mapping = data.get("report_group_map", {})
+    if not message.text or message.text not in mapping:
+        await message.answer("Выберите группу из списка")
+        return
+    group_id = int(mapping[message.text])
+    group_name = data.get("report_group_names", {}).get(group_id, "Группа")
+    today_str = date.today().strftime("%Y-%m-%d")
+    attendees = list_attended_today_by_group(config.db_path, group_id, today_str)
+    if attendees:
+        lines = [f"- {full_name} ({phone})" for full_name, phone in attendees]
+        text = f"Кто был сегодня ({group_name}, {today_str}):\n" + "\n".join(lines)
+    else:
+        text = f"Сегодня в группе {group_name} никто не отмечен"
+    await state.set_state(ReportStates.view)
+    await message.answer(text, reply_markup=report_actions_keyboard(include_attendance_today=True))

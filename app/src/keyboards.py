@@ -11,6 +11,34 @@ MAIN_MENU_BUTTONS = [
     "📊 Отчеты",
 ]
 
+REPORT_MENU_BUTTONS = [
+    "💰 Выручка",
+    "💸 Расходы",
+    "📈 Прибыль",
+    "👥 Посещаемость",
+    "🎫 Абонементы",
+    "🧾 Разовые",
+    "⏳ Отсрочки",
+    "📤 Excel директору",
+    "↩️ Назад",
+]
+
+REPORT_PERIOD_BUTTONS = [
+    "Этот месяц",
+    "Прошлый месяц",
+    "Эта неделя",
+    "Сегодня",
+    "Выбрать даты",
+    "↩️ Назад",
+]
+
+REPORT_ACTION_BUTTONS = [
+    "📅 Период",
+    "↩️ Назад",
+]
+
+REPORT_ATTENDANCE_TODAY_BUTTON = "👥 Кто был сегодня"
+
 ADMIN_MENU_BUTTONS = [
     "➕ Добавить админа",
     "⛔ Отключить админа",
@@ -246,6 +274,42 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=ADMIN_MENU_BUTTONS[3])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def report_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=REPORT_MENU_BUTTONS[0]), KeyboardButton(text=REPORT_MENU_BUTTONS[1])],
+        [KeyboardButton(text=REPORT_MENU_BUTTONS[2]), KeyboardButton(text=REPORT_MENU_BUTTONS[3])],
+        [KeyboardButton(text=REPORT_MENU_BUTTONS[4]), KeyboardButton(text=REPORT_MENU_BUTTONS[5])],
+        [KeyboardButton(text=REPORT_MENU_BUTTONS[6]), KeyboardButton(text=REPORT_MENU_BUTTONS[7])],
+        [KeyboardButton(text=REPORT_MENU_BUTTONS[8])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def report_period_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[0])],
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[1])],
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[2])],
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[3])],
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[4])],
+        [KeyboardButton(text=REPORT_PERIOD_BUTTONS[5])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def report_actions_keyboard(include_attendance_today: bool = False) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=REPORT_ACTION_BUTTONS[0])]]
+    if include_attendance_today:
+        rows.append([KeyboardButton(text=REPORT_ATTENDANCE_TODAY_BUTTON)])
+    rows.append([KeyboardButton(text=REPORT_ACTION_BUTTONS[1])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def report_date_input_keyboard() -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text="↩️ Назад")]]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
 
 
 def new_client_phone_keyboard() -> ReplyKeyboardMarkup:
