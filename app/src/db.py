@@ -162,6 +162,32 @@ def init_db(db_path: str) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_group ON payments(group_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_visit ON payments(visit_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_status_due ON payments(status, due_date);")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS expense_categories (
+              category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              code        TEXT NOT NULL UNIQUE,
+              name        TEXT NOT NULL,
+              is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_expense_categories_active ON expense_categories(is_active);")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS expenses (
+              expense_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+              exp_date     TEXT NOT NULL DEFAULT (date('now')),
+              category_id  INTEGER NOT NULL REFERENCES expense_categories(category_id),
+              amount       INTEGER NOT NULL CHECK (amount > 0),
+              method       TEXT NOT NULL CHECK (method IN ('cash','transfer','qr')),
+              comment      TEXT,
+              created_by   INTEGER,
+              created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_expenses_date ON expenses(exp_date);")
         conn.commit()
 
 
@@ -681,3 +707,201 @@ def get_defer_summary(
     if not row:
         return 0, 0, None, 0
     return int(row[0] or 0), int(row[1] or 0), row[2], int(row[3] or 0)
+
+
+def list_expense_categories(db_path: str, include_inactive: bool) -> List[Tuple[int, str, int]]:
+    with sqlite3.connect(db_path) as conn:
+        if include_inactive:
+            cur = conn.execute(
+                """
+                SELECT category_id, name, is_active
+                FROM expense_categories
+                ORDER BY name COLLATE NOCASE
+                """
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT category_id, name, is_active
+                FROM expense_categories
+                WHERE is_active = 1
+                ORDER BY name COLLATE NOCASE
+                """
+            )
+        return cur.fetchall()
+
+
+def _normalize_category_code(name: str) -> str:
+    base = "".join(ch.lower() if ch.isalnum() else "_" for ch in name.strip())
+    base = base.strip("_") or "category"
+    while "__" in base:
+        base = base.replace("__", "_")
+    return base
+
+
+def _ensure_unique_category_code(db_path: str, base: str) -> str:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute("SELECT code FROM expense_categories WHERE code LIKE ?", (f"{base}%",))
+        existing = {row[0] for row in cur.fetchall()}
+    if base not in existing:
+        return base
+    index = 2
+    while f"{base}_{index}" in existing:
+        index += 1
+    return f"{base}_{index}"
+
+
+def create_expense_category(db_path: str, name: str) -> int:
+    code = _ensure_unique_category_code(db_path, _normalize_category_code(name))
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO expense_categories(code, name, is_active) VALUES (?, ?, 1)",
+            (code, name),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def rename_expense_category(db_path: str, category_id: int, new_name: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE expense_categories SET name = ? WHERE category_id = ?",
+            (new_name, category_id),
+        )
+        conn.commit()
+
+
+def set_expense_category_active(db_path: str, category_id: int, is_active: bool) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE expense_categories SET is_active = ? WHERE category_id = ?",
+            (1 if is_active else 0, category_id),
+        )
+        conn.commit()
+
+
+def create_expense(
+    db_path: str,
+    exp_date: str,
+    category_id: int,
+    amount: int,
+    method: str,
+    comment: Optional[str],
+    created_by: Optional[int],
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO expenses(exp_date, category_id, amount, method, comment, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (exp_date, category_id, amount, method, comment, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def get_last_expense(db_path: str, created_by: int) -> Optional[Tuple[int, str, int, int, str, Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT expense_id, exp_date, category_id, amount, method, comment
+            FROM expenses
+            WHERE created_by = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (created_by,),
+        )
+        return cur.fetchone()
+
+
+def list_expenses(
+    db_path: str, date_from: str, date_to: str, category_id: Optional[int] = None, limit: int = 100
+) -> List[Tuple[int, str, int, str, int, str, Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        if category_id is None:
+            cur = conn.execute(
+                """
+                SELECT e.expense_id, e.exp_date, e.category_id, c.name, e.amount, e.method, e.comment
+                FROM expenses e
+                JOIN expense_categories c ON c.category_id = e.category_id
+                WHERE e.exp_date BETWEEN ? AND ?
+                ORDER BY e.exp_date DESC, e.expense_id DESC
+                LIMIT ?
+                """,
+                (date_from, date_to, limit),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT e.expense_id, e.exp_date, e.category_id, c.name, e.amount, e.method, e.comment
+                FROM expenses e
+                JOIN expense_categories c ON c.category_id = e.category_id
+                WHERE e.exp_date BETWEEN ? AND ? AND e.category_id = ?
+                ORDER BY e.exp_date DESC, e.expense_id DESC
+                LIMIT ?
+                """,
+                (date_from, date_to, category_id, limit),
+            )
+        return cur.fetchall()
+
+
+def get_expense_by_id(
+    db_path: str, expense_id: int
+) -> Optional[Tuple[int, str, int, str, int, str, Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT e.expense_id, e.exp_date, e.category_id, c.name, e.amount, e.method, e.comment
+            FROM expenses e
+            JOIN expense_categories c ON c.category_id = e.category_id
+            WHERE e.expense_id = ?
+            LIMIT 1
+            """,
+            (expense_id,),
+        )
+        return cur.fetchone()
+
+
+def update_expense(
+    db_path: str,
+    expense_id: int,
+    exp_date: Optional[str] = None,
+    category_id: Optional[int] = None,
+    amount: Optional[int] = None,
+    method: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> None:
+    fields = []
+    values: list = []
+    if exp_date is not None:
+        fields.append("exp_date = ?")
+        values.append(exp_date)
+    if category_id is not None:
+        fields.append("category_id = ?")
+        values.append(category_id)
+    if amount is not None:
+        fields.append("amount = ?")
+        values.append(amount)
+    if method is not None:
+        fields.append("method = ?")
+        values.append(method)
+    if comment is not None:
+        fields.append("comment = ?")
+        values.append(comment)
+    if not fields:
+        return
+    values.append(expense_id)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE expenses SET {', '.join(fields)} WHERE expense_id = ?",
+            tuple(values),
+        )
+        conn.commit()
+
+
+def delete_expense(db_path: str, expense_id: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM expenses WHERE expense_id = ?", (expense_id,))
+        conn.commit()

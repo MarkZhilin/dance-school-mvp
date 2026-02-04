@@ -158,6 +158,74 @@ PASS_PAY_METHOD_BUTTONS = [
     "↩️ Назад",
 ]
 
+EXPENSE_MENU_BUTTONS = [
+    "➕ Добавить расход",
+    "📋 Список расходов",
+    "🏷 Категории",
+    "↩️ Назад",
+]
+
+EXPENSE_CATEGORY_MENU_BUTTONS = [
+    "➕ Добавить",
+    "✏️ Переименовать",
+    "🙈 Скрыть категорию",
+    "👁 Показать скрытые",
+    "↩️ Назад",
+]
+
+EXPENSE_DATE_BUTTONS = [
+    "Сегодня",
+    "Вчера",
+    "Выбрать дату",
+    "🔁 Повторить последний расход",
+    "↩️ Назад",
+]
+
+EXPENSE_METHOD_BUTTONS = [
+    "Наличные",
+    "Перевод",
+    "QR",
+    "↩️ Назад",
+]
+
+EXPENSE_CONFIRM_BUTTONS = [
+    "✅ Сохранить",
+    "✏️ Изменить",
+    "❌ Отмена",
+]
+
+EXPENSE_COMMENT_BUTTONS = [
+    "Пропустить",
+    "↩️ Назад",
+]
+
+EXPENSE_LIST_PERIOD_BUTTONS = [
+    "Сегодня",
+    "Эта неделя",
+    "Этот месяц",
+    "Выбрать даты",
+    "↩️ Назад",
+]
+
+EXPENSE_CARD_BUTTONS = [
+    "✏️ Редактировать",
+    "🗑 Удалить",
+    "↩️ Назад",
+]
+
+EXPENSE_EDIT_BUTTONS = [
+    "Категория",
+    "Сумма",
+    "Метод",
+    "Комментарий",
+    "↩️ Назад",
+]
+
+EXPENSE_CATEGORY_SELECT_ADD = "➕ Добавить категорию"
+EXPENSE_CATEGORY_SELECT_BACK = "↩️ Назад"
+EXPENSE_CATEGORY_SELECT_PREV = "⬅️ Назад"
+EXPENSE_CATEGORY_SELECT_NEXT = "➡️ Вперёд"
+
 
 def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
     rows = [
@@ -392,4 +460,116 @@ def pass_pay_method_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[2]), KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[3])],
         [KeyboardButton(text=PASS_PAY_METHOD_BUTTONS[4])],
     ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_MENU_BUTTONS[0])],
+        [KeyboardButton(text=EXPENSE_MENU_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_MENU_BUTTONS[2])],
+        [KeyboardButton(text=EXPENSE_MENU_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_category_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_CATEGORY_MENU_BUTTONS[0])],
+        [KeyboardButton(text=EXPENSE_CATEGORY_MENU_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_CATEGORY_MENU_BUTTONS[2])],
+        [KeyboardButton(text=EXPENSE_CATEGORY_MENU_BUTTONS[3])],
+        [KeyboardButton(text=EXPENSE_CATEGORY_MENU_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_date_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_DATE_BUTTONS[0]), KeyboardButton(text=EXPENSE_DATE_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_DATE_BUTTONS[2])],
+        [KeyboardButton(text=EXPENSE_DATE_BUTTONS[3])],
+        [KeyboardButton(text=EXPENSE_DATE_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_method_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_METHOD_BUTTONS[0]), KeyboardButton(text=EXPENSE_METHOD_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_METHOD_BUTTONS[2])],
+        [KeyboardButton(text=EXPENSE_METHOD_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_confirm_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_CONFIRM_BUTTONS[0])],
+        [KeyboardButton(text=EXPENSE_CONFIRM_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_CONFIRM_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_comment_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_COMMENT_BUTTONS[0])],
+        [KeyboardButton(text=EXPENSE_COMMENT_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_list_period_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_LIST_PERIOD_BUTTONS[0]), KeyboardButton(text=EXPENSE_LIST_PERIOD_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_LIST_PERIOD_BUTTONS[2])],
+        [KeyboardButton(text=EXPENSE_LIST_PERIOD_BUTTONS[3])],
+        [KeyboardButton(text=EXPENSE_LIST_PERIOD_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_card_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_CARD_BUTTONS[0]), KeyboardButton(text=EXPENSE_CARD_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_CARD_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_edit_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=EXPENSE_EDIT_BUTTONS[0]), KeyboardButton(text=EXPENSE_EDIT_BUTTONS[1])],
+        [KeyboardButton(text=EXPENSE_EDIT_BUTTONS[2]), KeyboardButton(text=EXPENSE_EDIT_BUTTONS[3])],
+        [KeyboardButton(text=EXPENSE_EDIT_BUTTONS[4])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def categories_selection_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text="↩️ Назад")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expense_category_select_keyboard(
+    labels: list[str], show_nav: bool
+) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=EXPENSE_CATEGORY_SELECT_ADD)])
+    rows.append([KeyboardButton(text=EXPENSE_CATEGORY_SELECT_BACK)])
+    if show_nav:
+        rows.append(
+            [
+                KeyboardButton(text=EXPENSE_CATEGORY_SELECT_PREV),
+                KeyboardButton(text=EXPENSE_CATEGORY_SELECT_NEXT),
+            ]
+        )
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def expenses_selection_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text="↩️ Назад")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)

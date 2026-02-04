@@ -19,11 +19,15 @@ from db import (
     create_payment_single,
     create_single_visit_booked,
     create_pass,
+    create_expense,
+    create_expense_category,
     deactivate_admin,
     get_client_by_id,
     get_client_by_phone,
     get_client_by_tg_username,
     get_active_pass,
+    get_expense_by_id,
+    get_last_expense,
     get_or_create_single_visit,
     is_admin_active,
     list_clients_for_attendance,
@@ -31,10 +35,16 @@ from db import (
     list_active_passes,
     list_admins,
     list_deferred_payments_by_client,
+    list_expense_categories,
+    list_expenses,
     search_clients_by_name,
     close_deferred_payment,
     get_payment_by_id,
     get_defer_summary,
+    rename_expense_category,
+    set_expense_category_active,
+    update_expense,
+    delete_expense,
     upsert_client_group_active,
     upsert_visit_status,
     upsert_admin,
@@ -58,6 +68,19 @@ from keyboards import (
     PAYMENT_METHOD_BUTTONS,
     PAYMENT_TYPE_BUTTONS,
     DEFER_DUE_DATE_BUTTONS,
+    EXPENSE_CARD_BUTTONS,
+    EXPENSE_CATEGORY_MENU_BUTTONS,
+    EXPENSE_COMMENT_BUTTONS,
+    EXPENSE_CONFIRM_BUTTONS,
+    EXPENSE_DATE_BUTTONS,
+    EXPENSE_EDIT_BUTTONS,
+    EXPENSE_LIST_PERIOD_BUTTONS,
+    EXPENSE_MENU_BUTTONS,
+    EXPENSE_METHOD_BUTTONS,
+    EXPENSE_CATEGORY_SELECT_ADD,
+    EXPENSE_CATEGORY_SELECT_BACK,
+    EXPENSE_CATEGORY_SELECT_PREV,
+    EXPENSE_CATEGORY_SELECT_NEXT,
     PASS_AFTER_SAVE_BUTTONS,
     PASS_MENU_BUTTONS,
     PASS_PAY_METHOD_BUTTONS,
@@ -87,6 +110,18 @@ from keyboards import (
     pass_menu_keyboard,
     passes_after_save_menu_kb,
     pass_pay_method_keyboard,
+    categories_selection_keyboard,
+    expense_card_keyboard,
+    expense_category_menu_keyboard,
+    expense_comment_keyboard,
+    expense_confirm_keyboard,
+    expense_date_keyboard,
+    expense_edit_keyboard,
+    expense_list_period_keyboard,
+    expense_menu_keyboard,
+    expense_method_keyboard,
+    expense_category_select_keyboard,
+    expenses_selection_keyboard,
     search_menu_keyboard,
     search_results_keyboard,
     skip_keyboard,
@@ -184,6 +219,34 @@ class PassAfterSave(StatesGroup):
 class PassPayStates(StatesGroup):
     choose_method = State()
     enter_amount = State()
+
+
+class ExpenseStates(StatesGroup):
+    menu = State()
+    add_date = State()
+    add_category = State()
+    add_category_create = State()
+    add_amount = State()
+    add_method = State()
+    add_comment = State()
+    add_confirm = State()
+    add_edit = State()
+    list_period = State()
+    list_custom_from = State()
+    list_custom_to = State()
+    list_select = State()
+    card = State()
+    edit_menu = State()
+    edit_category = State()
+    edit_amount = State()
+    edit_method = State()
+    edit_comment = State()
+    category_menu = State()
+    category_add = State()
+    category_rename_select = State()
+    category_rename_name = State()
+    category_hide_select = State()
+    category_show_hidden_select = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -301,6 +364,46 @@ def _next_month_range(current: date) -> tuple[date, date]:
     return first_next, last_next
 
 
+def _current_week_range(today_date: date) -> tuple[str, str]:
+    start = today_date - timedelta(days=today_date.weekday())
+    return start.strftime("%Y-%m-%d"), today_date.strftime("%Y-%m-%d")
+
+
+def _current_month_range(today_date: date) -> tuple[str, str]:
+    start = today_date.replace(day=1)
+    return start.strftime("%Y-%m-%d"), today_date.strftime("%Y-%m-%d")
+
+
+def _expense_categories_page(
+    categories: list[list], page: int, page_size: int
+) -> tuple[list[list], int]:
+    total = len(categories)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    safe_page = max(0, min(page, total_pages - 1))
+    start_idx = safe_page * page_size
+    end_idx = start_idx + page_size
+    return categories[start_idx:end_idx], total_pages
+
+
+async def _show_expense_category_selection(
+    message: Message, config: Config, state: FSMContext
+) -> None:
+    categories = list_expense_categories(config.db_path, include_inactive=False)
+    categories_data = [[row[0], row[1]] for row in categories]
+    page_size = 12
+    page = (await state.get_data()).get("category_page", 0)
+    page_items, total_pages = _expense_categories_page(categories_data, page, page_size)
+    await state.update_data(categories=categories_data, category_page=page)
+    labels = [f"{row[0]}) {row[1]}" for row in page_items]
+    show_nav = total_pages > 1
+    if not labels:
+        await message.answer("Активных категорий нет. Добавьте категорию.")
+    await message.answer(
+        "Выберите категорию:",
+        reply_markup=expense_category_select_keyboard(labels, show_nav),
+    )
+
+
 def _format_payment_summary(
     client_name: str,
     group_name: str,
@@ -381,6 +484,58 @@ def _format_pass_summary(
         f"Конец: {end_date}\n"
         f"Активный: {active_label}"
     )
+
+
+def _format_expense_method_label(method: str) -> str:
+    labels = {
+        "cash": "Наличные",
+        "transfer": "Перевод",
+        "qr": "QR",
+    }
+    return labels.get(method, method)
+
+
+def _format_expense_summary(
+    exp_date: str,
+    category_name: str,
+    amount: int,
+    method: str,
+    comment: Optional[str],
+) -> str:
+    comment_line = comment if comment else "—"
+    return (
+        "Проверьте данные:\n"
+        f"Дата: {exp_date}\n"
+        f"Категория: {category_name}\n"
+        f"Сумма: {amount}\n"
+        f"Метод: {_format_expense_method_label(method)}\n"
+        f"Комментарий: {comment_line}"
+    )
+
+
+def _format_expense_card(
+    exp_date: str,
+    category_name: str,
+    amount: int,
+    method: str,
+    comment: Optional[str],
+) -> str:
+    comment_line = comment if comment else "—"
+    return (
+        "Расход:\n"
+        f"Дата: {exp_date}\n"
+        f"Категория: {category_name}\n"
+        f"Сумма: {amount}\n"
+        f"Метод: {_format_expense_method_label(method)}\n"
+        f"Комментарий: {comment_line}"
+    )
+
+
+def _active_expense_categories_text(categories: list[tuple[int, str, int]]) -> str:
+    if not categories:
+        return "Активных категорий нет"
+    lines = [f"{row[0]}) {row[1]}" for row in categories]
+    return "Активные категории:\n" + "\n".join(lines)
 
 
 
@@ -2249,6 +2404,701 @@ async def handle_pass_pay_amount(message: Message, config: Config, state: FSMCon
     )
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[6], StateFilter(None))
+async def handle_expense_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(ExpenseStates.menu)
+    await message.answer("Расходы", reply_markup=expense_menu_keyboard())
+
+
+@router.message(ExpenseStates.menu)
+async def handle_expense_menu_choice(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_MENU_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Главное меню", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == EXPENSE_MENU_BUTTONS[0]:
+        await state.set_state(ExpenseStates.add_date)
+        await message.answer("Выберите дату", reply_markup=expense_date_keyboard())
+        return
+    if message.text == EXPENSE_MENU_BUTTONS[1]:
+        await state.set_state(ExpenseStates.list_period)
+        await message.answer("Выберите период", reply_markup=expense_list_period_keyboard())
+        return
+    if message.text == EXPENSE_MENU_BUTTONS[2]:
+        await state.set_state(ExpenseStates.category_menu)
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        await message.answer(
+            _active_expense_categories_text(categories),
+            reply_markup=expense_category_menu_keyboard(),
+        )
+        return
+    await message.answer("Выберите действие", reply_markup=expense_menu_keyboard())
+
+
+@router.message(ExpenseStates.add_date)
+async def handle_expense_add_date(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_DATE_BUTTONS[4]:
+        await state.set_state(ExpenseStates.menu)
+        await message.answer("Расходы", reply_markup=expense_menu_keyboard())
+        return
+    if message.text == EXPENSE_DATE_BUTTONS[3]:
+        created_by = message.from_user.id if message.from_user else 0
+        last_expense = get_last_expense(config.db_path, created_by)
+        if not last_expense:
+            await message.answer("Нет предыдущих расходов")
+            return
+        exp_date, category_id, amount, method, comment = (
+            last_expense[1],
+            last_expense[2],
+            last_expense[3],
+            last_expense[4],
+            last_expense[5],
+        )
+        categories = list_expense_categories(config.db_path, include_inactive=True)
+        category_name = next((c[1] for c in categories if c[0] == category_id), "—")
+        await state.update_data(
+            exp_date=exp_date,
+            category_id=category_id,
+            category_name=category_name,
+            amount=amount,
+            method=method,
+            comment=comment,
+        )
+        await state.set_state(ExpenseStates.add_confirm)
+        summary = _format_expense_summary(exp_date, category_name, amount, method, comment)
+        await message.answer(summary, reply_markup=expense_confirm_keyboard())
+        return
+    if message.text == EXPENSE_DATE_BUTTONS[0]:
+        exp_date = date.today().strftime("%Y-%m-%d")
+    elif message.text == EXPENSE_DATE_BUTTONS[1]:
+        exp_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    elif message.text == EXPENSE_DATE_BUTTONS[2]:
+        await message.answer("Введите дату в формате YYYY-MM-DD")
+        return
+    else:
+        parsed = _parse_iso_date(message.text or "")
+        if not parsed:
+            await message.answer("Неверный формат даты, используйте YYYY-MM-DD")
+            return
+        exp_date = parsed
+    await state.update_data(exp_date=exp_date)
+    await state.set_state(ExpenseStates.add_category)
+    await _show_expense_category_selection(message, config, state)
+
+
+@router.message(ExpenseStates.add_category)
+async def handle_expense_add_category(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_CATEGORY_SELECT_BACK:
+        await state.set_state(ExpenseStates.add_date)
+        await message.answer("Выберите дату", reply_markup=expense_date_keyboard())
+        return
+    if message.text == EXPENSE_CATEGORY_SELECT_ADD:
+        await state.set_state(ExpenseStates.add_category_create)
+        await message.answer("Введите название категории")
+        return
+    if message.text == EXPENSE_CATEGORY_SELECT_NEXT or message.text == EXPENSE_CATEGORY_SELECT_PREV:
+        data = await state.get_data()
+        current_page = int(data.get("category_page", 0))
+        new_page = current_page + (1 if message.text == EXPENSE_CATEGORY_SELECT_NEXT else -1)
+        await state.update_data(category_page=new_page)
+        await _show_expense_category_selection(message, config, state)
+        return
+    match = re.match(r"^(\d+)\)", message.text or "")
+    if not match:
+        await message.answer("Выберите категорию кнопками ниже")
+        await _show_expense_category_selection(message, config, state)
+        return
+    category_id = int(match.group(1))
+    data = await state.get_data()
+    categories = data.get("categories", [])
+    category_name = next((row[1] for row in categories if row[0] == category_id), None)
+    if not category_name:
+        await message.answer("Выберите категорию кнопками ниже")
+        await _show_expense_category_selection(message, config, state)
+        return
+    await state.update_data(category_id=category_id, category_name=category_name)
+    await state.set_state(ExpenseStates.add_amount)
+    await message.answer("Введите сумму")
+
+
+@router.message(ExpenseStates.add_category_create)
+async def handle_expense_add_category_create(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_CATEGORY_SELECT_BACK:
+        await state.set_state(ExpenseStates.add_category)
+        await _show_expense_category_selection(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите название категории")
+        return
+    create_expense_category(config.db_path, message.text.strip())
+    await state.set_state(ExpenseStates.add_category)
+    await _show_expense_category_selection(message, config, state)
+
+
+@router.message(ExpenseStates.add_amount)
+async def handle_expense_add_amount(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    amount = _parse_amount(message.text or "")
+    if amount is None:
+        await message.answer("Введите сумму числом")
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(ExpenseStates.add_method)
+    await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+
+
+@router.message(ExpenseStates.add_method)
+async def handle_expense_add_method(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_METHOD_BUTTONS[3]:
+        await state.set_state(ExpenseStates.add_amount)
+        await message.answer("Введите сумму")
+        return
+    method_map = {
+        EXPENSE_METHOD_BUTTONS[0]: "cash",
+        EXPENSE_METHOD_BUTTONS[1]: "transfer",
+        EXPENSE_METHOD_BUTTONS[2]: "qr",
+    }
+    if message.text not in method_map:
+        await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+        return
+    await state.update_data(method=method_map[message.text])
+    await state.set_state(ExpenseStates.add_comment)
+    await message.answer("Комментарий (опционально)", reply_markup=expense_comment_keyboard())
+
+
+@router.message(ExpenseStates.add_comment)
+async def handle_expense_add_comment(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_COMMENT_BUTTONS[1]:
+        await state.set_state(ExpenseStates.add_method)
+        await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+        return
+    comment = None
+    if message.text and message.text not in (EXPENSE_COMMENT_BUTTONS[0],):
+        comment = message.text.strip()
+    await state.update_data(comment=comment)
+    data = await state.get_data()
+    summary = _format_expense_summary(
+        data.get("exp_date"),
+        data.get("category_name"),
+        int(data.get("amount")),
+        data.get("method"),
+        comment,
+    )
+    await state.set_state(ExpenseStates.add_confirm)
+    await message.answer(summary, reply_markup=expense_confirm_keyboard())
+
+
+@router.message(ExpenseStates.add_confirm)
+async def handle_expense_add_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_CONFIRM_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Отмена", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    if message.text == EXPENSE_CONFIRM_BUTTONS[1]:
+        await state.set_state(ExpenseStates.add_edit)
+        await message.answer("Что изменить?", reply_markup=expense_edit_keyboard())
+        return
+    if message.text != EXPENSE_CONFIRM_BUTTONS[0]:
+        await message.answer("Выберите действие", reply_markup=expense_confirm_keyboard())
+        return
+    data = await state.get_data()
+    create_expense(
+        config.db_path,
+        exp_date=data.get("exp_date"),
+        category_id=int(data.get("category_id")),
+        amount=int(data.get("amount")),
+        method=data.get("method"),
+        comment=data.get("comment"),
+        created_by=message.from_user.id if message.from_user else None,
+    )
+    await state.clear()
+    await message.answer("Готово ✅", reply_markup=expense_menu_keyboard())
+
+
+@router.message(ExpenseStates.add_edit)
+async def handle_expense_add_edit_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[4]:
+        data = await state.get_data()
+        summary = _format_expense_summary(
+            data.get("exp_date"),
+            data.get("category_name"),
+            int(data.get("amount")),
+            data.get("method"),
+            data.get("comment"),
+        )
+        await state.set_state(ExpenseStates.add_confirm)
+        await message.answer(summary, reply_markup=expense_confirm_keyboard())
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[0]:
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        labels = [f"{c[1]} (id:{c[0]})" for c in categories]
+        mapping = {label: c[0] for label, c in zip(labels, categories)}
+        await state.update_data(category_map=mapping, category_names={c[0]: c[1] for c in categories})
+        await state.set_state(ExpenseStates.add_category)
+        await message.answer("Выберите категорию", reply_markup=categories_selection_keyboard(labels))
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[1]:
+        await state.set_state(ExpenseStates.add_amount)
+        await message.answer("Введите сумму")
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[2]:
+        await state.set_state(ExpenseStates.add_method)
+        await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[3]:
+        await state.set_state(ExpenseStates.add_comment)
+        await message.answer("Комментарий (опционально)", reply_markup=expense_comment_keyboard())
+        return
+    await message.answer("Выберите поле", reply_markup=expense_edit_keyboard())
+
+
+@router.message(ExpenseStates.list_period)
+async def handle_expense_list_period(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_LIST_PERIOD_BUTTONS[4]:
+        await state.set_state(ExpenseStates.menu)
+        await message.answer("Расходы", reply_markup=expense_menu_keyboard())
+        return
+    today_date = date.today()
+    if message.text == EXPENSE_LIST_PERIOD_BUTTONS[0]:
+        date_from = today_date.strftime("%Y-%m-%d")
+        date_to = date_from
+    elif message.text == EXPENSE_LIST_PERIOD_BUTTONS[1]:
+        date_from, date_to = _current_week_range(today_date)
+    elif message.text == EXPENSE_LIST_PERIOD_BUTTONS[2]:
+        date_from, date_to = _current_month_range(today_date)
+    elif message.text == EXPENSE_LIST_PERIOD_BUTTONS[3]:
+        await state.set_state(ExpenseStates.list_custom_from)
+        await message.answer("Введите дату начала (YYYY-MM-DD)")
+        return
+    else:
+        await message.answer("Выберите период", reply_markup=expense_list_period_keyboard())
+        return
+    await _show_expense_list(message, config, state, date_from, date_to)
+
+
+@router.message(ExpenseStates.list_custom_from)
+async def handle_expense_list_custom_from(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    parsed = _parse_iso_date(message.text or "")
+    if not parsed:
+        await message.answer("Неверный формат даты, используйте YYYY-MM-DD")
+        return
+    await state.update_data(list_from=parsed)
+    await state.set_state(ExpenseStates.list_custom_to)
+    await message.answer("Введите дату конца (YYYY-MM-DD)")
+
+
+@router.message(ExpenseStates.list_custom_to)
+async def handle_expense_list_custom_to(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    parsed = _parse_iso_date(message.text or "")
+    if not parsed:
+        await message.answer("Неверный формат даты, используйте YYYY-MM-DD")
+        return
+    data = await state.get_data()
+    await _show_expense_list(message, config, state, data.get("list_from"), parsed)
+
+
+async def _show_expense_list(
+    message: Message, config: Config, state: FSMContext, date_from: str, date_to: str
+) -> None:
+    expenses = list_expenses(config.db_path, date_from, date_to, limit=30)
+    if not expenses:
+        await state.set_state(ExpenseStates.menu)
+        await message.answer("Расходов нет", reply_markup=expense_menu_keyboard())
+        return
+    lines = []
+    labels = []
+    mapping = {}
+    for idx, row in enumerate(expenses, start=1):
+        label = f"{idx}) {row[1]} • {row[3]} • {row[4]} • {_format_expense_method_label(row[5])}"
+        lines.append(label)
+        labels.append(label)
+        mapping[label] = row[0]
+    await state.update_data(expense_map=mapping)
+    await state.set_state(ExpenseStates.list_select)
+    await message.answer("\n".join(lines), reply_markup=expenses_selection_keyboard(labels))
+
+
+@router.message(ExpenseStates.list_select)
+async def handle_expense_list_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ExpenseStates.list_period)
+        await message.answer("Выберите период", reply_markup=expense_list_period_keyboard())
+        return
+    data = await state.get_data()
+    mapping = data.get("expense_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите расход из списка")
+        return
+    expense = get_expense_by_id(config.db_path, int(mapping[message.text]))
+    if not expense:
+        await message.answer("Расход не найден")
+        return
+    await state.update_data(expense_id=expense[0])
+    await state.set_state(ExpenseStates.card)
+    card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+    await message.answer(card, reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.card)
+async def handle_expense_card_actions(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_CARD_BUTTONS[2]:
+        await state.set_state(ExpenseStates.list_period)
+        await message.answer("Выберите период", reply_markup=expense_list_period_keyboard())
+        return
+    if message.text == EXPENSE_CARD_BUTTONS[1]:
+        data = await state.get_data()
+        delete_expense(config.db_path, int(data.get("expense_id")))
+        await state.set_state(ExpenseStates.menu)
+        await message.answer("Удалено ✅", reply_markup=expense_menu_keyboard())
+        return
+    if message.text == EXPENSE_CARD_BUTTONS[0]:
+        await state.set_state(ExpenseStates.edit_menu)
+        await message.answer("Что изменить?", reply_markup=expense_edit_keyboard())
+        return
+    await message.answer("Выберите действие", reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.edit_menu)
+async def handle_expense_edit_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[4]:
+        data = await state.get_data()
+        expense = get_expense_by_id(config.db_path, int(data.get("expense_id")))
+        if not expense:
+            await message.answer("Расход не найден")
+            return
+        await state.set_state(ExpenseStates.card)
+        card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+        await message.answer(card, reply_markup=expense_card_keyboard())
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[0]:
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        labels = [f"{c[1]} (id:{c[0]})" for c in categories]
+        mapping = {label: c[0] for label, c in zip(labels, categories)}
+        await state.update_data(category_map=mapping, category_names={c[0]: c[1] for c in categories})
+        await state.set_state(ExpenseStates.edit_category)
+        await message.answer("Выберите категорию", reply_markup=categories_selection_keyboard(labels))
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[1]:
+        await state.set_state(ExpenseStates.edit_amount)
+        await message.answer("Введите сумму")
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[2]:
+        await state.set_state(ExpenseStates.edit_method)
+        await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+        return
+    if message.text == EXPENSE_EDIT_BUTTONS[3]:
+        await state.set_state(ExpenseStates.edit_comment)
+        await message.answer("Комментарий (опционально)", reply_markup=expense_comment_keyboard())
+        return
+    await message.answer("Выберите поле", reply_markup=expense_edit_keyboard())
+
+
+@router.message(ExpenseStates.edit_category)
+async def handle_expense_edit_category(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ExpenseStates.edit_menu)
+        await message.answer("Что изменить?", reply_markup=expense_edit_keyboard())
+        return
+    data = await state.get_data()
+    mapping = data.get("category_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите категорию из списка")
+        return
+    update_expense(config.db_path, int(data.get("expense_id")), category_id=int(mapping[message.text]))
+    await state.set_state(ExpenseStates.card)
+    expense = get_expense_by_id(config.db_path, int(data.get("expense_id")))
+    card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+    await message.answer(card, reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.edit_amount)
+async def handle_expense_edit_amount(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    amount = _parse_amount(message.text or "")
+    if amount is None:
+        await message.answer("Введите сумму числом")
+        return
+    data = await state.get_data()
+    update_expense(config.db_path, int(data.get("expense_id")), amount=amount)
+    await state.set_state(ExpenseStates.card)
+    expense = get_expense_by_id(config.db_path, int(data.get("expense_id")))
+    card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+    await message.answer(card, reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.edit_method)
+async def handle_expense_edit_method(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_METHOD_BUTTONS[3]:
+        await state.set_state(ExpenseStates.edit_menu)
+        await message.answer("Что изменить?", reply_markup=expense_edit_keyboard())
+        return
+    method_map = {
+        EXPENSE_METHOD_BUTTONS[0]: "cash",
+        EXPENSE_METHOD_BUTTONS[1]: "transfer",
+        EXPENSE_METHOD_BUTTONS[2]: "qr",
+    }
+    if message.text not in method_map:
+        await message.answer("Выберите способ", reply_markup=expense_method_keyboard())
+        return
+    data = await state.get_data()
+    update_expense(config.db_path, int(data.get("expense_id")), method=method_map[message.text])
+    await state.set_state(ExpenseStates.card)
+    expense = get_expense_by_id(config.db_path, int(data.get("expense_id")))
+    card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+    await message.answer(card, reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.edit_comment)
+async def handle_expense_edit_comment(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_COMMENT_BUTTONS[1]:
+        await state.set_state(ExpenseStates.edit_menu)
+        await message.answer("Что изменить?", reply_markup=expense_edit_keyboard())
+        return
+    comment = None
+    if message.text and message.text not in (EXPENSE_COMMENT_BUTTONS[0],):
+        comment = message.text.strip()
+    data = await state.get_data()
+    update_expense(config.db_path, int(data.get("expense_id")), comment=comment)
+    await state.set_state(ExpenseStates.card)
+    expense = get_expense_by_id(config.db_path, int(data.get("expense_id")))
+    card = _format_expense_card(expense[1], expense[3], expense[4], expense[5], expense[6])
+    await message.answer(card, reply_markup=expense_card_keyboard())
+
+
+@router.message(ExpenseStates.category_menu)
+async def handle_expense_category_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == EXPENSE_CATEGORY_MENU_BUTTONS[4]:
+        await state.set_state(ExpenseStates.menu)
+        await message.answer("Расходы", reply_markup=expense_menu_keyboard())
+        return
+    if message.text == "Категории":
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        await message.answer(
+            _active_expense_categories_text(categories),
+            reply_markup=expense_category_menu_keyboard(),
+        )
+        return
+    if message.text == EXPENSE_CATEGORY_MENU_BUTTONS[0]:
+        await state.set_state(ExpenseStates.category_add)
+        await message.answer("Введите название категории")
+        return
+    if message.text == EXPENSE_CATEGORY_MENU_BUTTONS[1]:
+        categories = list_expense_categories(config.db_path, include_inactive=True)
+        if not categories:
+            await message.answer("Категорий нет")
+            return
+        labels = [f"{c[1]} (id:{c[0]})" for c in categories]
+        mapping = {label: c[0] for label, c in zip(labels, categories)}
+        await state.update_data(category_map=mapping)
+        await state.set_state(ExpenseStates.category_rename_select)
+        await message.answer("Выберите категорию", reply_markup=categories_selection_keyboard(labels))
+        return
+    if message.text == EXPENSE_CATEGORY_MENU_BUTTONS[2]:
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        if not categories:
+            await message.answer("Активных категорий нет")
+            return
+        labels = [f"{c[1]} (id:{c[0]})" for c in categories]
+        mapping = {label: c[0] for label, c in zip(labels, categories)}
+        await state.update_data(category_map=mapping)
+        await state.set_state(ExpenseStates.category_hide_select)
+        await message.answer("Выберите категорию", reply_markup=categories_selection_keyboard(labels))
+        return
+    if message.text == EXPENSE_CATEGORY_MENU_BUTTONS[3]:
+        categories = list_expense_categories(config.db_path, include_inactive=True)
+        hidden = [c for c in categories if c[2] == 0]
+        if not hidden:
+            await message.answer("Скрытых категорий нет")
+            return
+        labels = [f"{c[1]} (id:{c[0]})" for c in hidden]
+        mapping = {label: c[0] for label, c in zip(labels, hidden)}
+        await state.update_data(category_map=mapping)
+        await state.set_state(ExpenseStates.category_show_hidden_select)
+        lines = [f"{row[0]}) {row[1]}" for row in hidden]
+        await message.answer("Скрытые категории:\n" + "\n".join(lines))
+        await message.answer("Выберите категорию для активации", reply_markup=categories_selection_keyboard(labels))
+        return
+    await message.answer("Выберите действие", reply_markup=expense_category_menu_keyboard())
+
+
+@router.message(ExpenseStates.category_add)
+async def handle_expense_category_add(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите название категории")
+        return
+    create_expense_category(config.db_path, message.text.strip())
+    await state.set_state(ExpenseStates.category_menu)
+    categories = list_expense_categories(config.db_path, include_inactive=False)
+    await message.answer("Категория добавлена ✅")
+    await message.answer(
+        _active_expense_categories_text(categories),
+        reply_markup=expense_category_menu_keyboard(),
+    )
+
+
+@router.message(ExpenseStates.category_rename_select)
+async def handle_expense_category_rename_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ExpenseStates.category_menu)
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        await message.answer(
+            _active_expense_categories_text(categories),
+            reply_markup=expense_category_menu_keyboard(),
+        )
+        return
+    data = await state.get_data()
+    mapping = data.get("category_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите категорию из списка")
+        return
+    await state.update_data(category_id=int(mapping[message.text]))
+    await state.set_state(ExpenseStates.category_rename_name)
+    await message.answer("Введите новое название")
+
+
+@router.message(ExpenseStates.category_rename_name)
+async def handle_expense_category_rename_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите новое название")
+        return
+    data = await state.get_data()
+    rename_expense_category(config.db_path, int(data.get("category_id")), message.text.strip())
+    await state.set_state(ExpenseStates.category_menu)
+    categories = list_expense_categories(config.db_path, include_inactive=False)
+    await message.answer("Категория переименована ✅")
+    await message.answer(
+        _active_expense_categories_text(categories),
+        reply_markup=expense_category_menu_keyboard(),
+    )
+
+
+@router.message(ExpenseStates.category_hide_select)
+async def handle_expense_category_hide_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ExpenseStates.category_menu)
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        await message.answer(
+            _active_expense_categories_text(categories),
+            reply_markup=expense_category_menu_keyboard(),
+        )
+        return
+    data = await state.get_data()
+    mapping = data.get("category_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите категорию из списка")
+        return
+    set_expense_category_active(config.db_path, int(mapping[message.text]), False)
+    await state.set_state(ExpenseStates.category_menu)
+    categories = list_expense_categories(config.db_path, include_inactive=False)
+    await message.answer("Категория скрыта ✅")
+    await message.answer(
+        _active_expense_categories_text(categories),
+        reply_markup=expense_category_menu_keyboard(),
+    )
+
+
+@router.message(ExpenseStates.category_show_hidden_select)
+async def handle_expense_category_show_hidden_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ExpenseStates.category_menu)
+        categories = list_expense_categories(config.db_path, include_inactive=False)
+        await message.answer(
+            _active_expense_categories_text(categories),
+            reply_markup=expense_category_menu_keyboard(),
+        )
+        return
+    data = await state.get_data()
+    mapping = data.get("category_map", {})
+    if message.text not in mapping:
+        await message.answer("Выберите категорию из списка")
+        return
+    set_expense_category_active(config.db_path, int(mapping[message.text]), True)
+    await state.set_state(ExpenseStates.category_menu)
+    categories = list_expense_categories(config.db_path, include_inactive=False)
+    await message.answer("Категория активирована ✅")
+    await message.answer(
+        _active_expense_categories_text(categories),
+        reply_markup=expense_category_menu_keyboard(),
+    )
+
+
 @router.message(F.text == MAIN_MENU_BUTTONS[1])
 async def handle_search_menu(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
@@ -2435,6 +3285,7 @@ async def handle_cancel_any(message: Message, config: Config, state: FSMContext)
     & (F.text != MAIN_MENU_BUTTONS[3])
     & (F.text != MAIN_MENU_BUTTONS[4])
     & (F.text != MAIN_MENU_BUTTONS[5])
+    & (F.text != MAIN_MENU_BUTTONS[6])
 )
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
