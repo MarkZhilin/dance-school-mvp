@@ -5,6 +5,17 @@
 2) `specs/dance_school_admin_bot_mvp_rev2.md` — UI/Business spec (buttons/flows/reports)
 3) `specs/TECH_MVP_FOR_CODEX.md` — TECH spec for Codex
 
+## ▶️ WSL запуск
+Активация venv (WSL):
+```bash
+source .venv/bin/activate
+```
+
+Запуск бота (WSL):
+```bash
+python3 app/src/main.py
+```
+
 ## Правило допущений
 Если детали нет в спеках:
 - делаем минимальное разумное допущение,
