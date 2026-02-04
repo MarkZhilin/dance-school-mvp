@@ -5,6 +5,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
+_UNSET = object()
+
 
 @dataclass(frozen=True)
 class AdminRecord:
@@ -58,8 +60,24 @@ def init_db(db_path: str) -> None:
               day_of_week  INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
               time_hhmm    TEXT NOT NULL,
               duration_min INTEGER NOT NULL CHECK (duration_min > 0),
-              is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+              room_name    TEXT,
+              valid_from   TEXT,
+              valid_to     TEXT,
+              is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+              created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_schedule_group_weekday
+              ON schedule(group_id, day_of_week);
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_schedule_unique_slot
+              ON schedule(group_id, day_of_week, time_hhmm);
             """
         )
         conn.execute(
@@ -205,6 +223,7 @@ def init_db(db_path: str) -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_expenses_date ON expenses(exp_date);")
         _ensure_groups_trainer_column(conn)
+        _ensure_schedule_columns(conn)
         conn.commit()
 
 
@@ -213,6 +232,21 @@ def _ensure_groups_trainer_column(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in cur.fetchall()}
     if "trainer_id" not in columns:
         conn.execute("ALTER TABLE groups ADD COLUMN trainer_id INTEGER;")
+
+
+def _ensure_schedule_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(schedule);")
+    columns = {row[1] for row in cur.fetchall()}
+    if "room_name" not in columns:
+        conn.execute("ALTER TABLE schedule ADD COLUMN room_name TEXT;")
+    if "valid_from" not in columns:
+        conn.execute("ALTER TABLE schedule ADD COLUMN valid_from TEXT;")
+    if "valid_to" not in columns:
+        conn.execute("ALTER TABLE schedule ADD COLUMN valid_to TEXT;")
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE schedule ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));"
+        )
 
 
 def upsert_admin(db_path: str, tg_user_id: int, name: str) -> None:
@@ -547,6 +581,127 @@ def clear_group_trainer(db_path: str, group_id: int) -> None:
         conn.execute(
             "UPDATE groups SET trainer_id = NULL, trainer_name = NULL WHERE group_id = ?",
             (group_id,),
+        )
+        conn.commit()
+
+
+def list_schedule_for_group(
+    db_path: str, group_id: int, include_inactive: bool = False
+) -> List[Tuple[int, int, str, int, Optional[str], int]]:
+    with sqlite3.connect(db_path) as conn:
+        if include_inactive:
+            cur = conn.execute(
+                """
+                SELECT schedule_id, day_of_week, time_hhmm, duration_min, room_name, is_active
+                FROM schedule
+                WHERE group_id = ?
+                ORDER BY day_of_week, time_hhmm
+                """,
+                (group_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT schedule_id, day_of_week, time_hhmm, duration_min, room_name, is_active
+                FROM schedule
+                WHERE group_id = ? AND is_active = 1
+                ORDER BY day_of_week, time_hhmm
+                """,
+                (group_id,),
+            )
+        return cur.fetchall()
+
+
+def get_schedule_by_id(db_path: str, schedule_id: int) -> Optional[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT schedule_id, group_id, day_of_week, time_hhmm, duration_min, room_name, is_active
+            FROM schedule
+            WHERE schedule_id = ?
+            LIMIT 1
+            """,
+            (schedule_id,),
+        )
+        return cur.fetchone()
+
+
+def add_schedule_slot(
+    db_path: str,
+    group_id: int,
+    weekday: int,
+    start_time: str,
+    duration_min: int = 60,
+    room_name: Optional[str] = None,
+    valid_from: Optional[str] = None,
+    valid_to: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO schedule(
+              group_id, day_of_week, time_hhmm, duration_min, room_name, valid_from, valid_to, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (group_id, weekday, start_time, duration_min, room_name, valid_from, valid_to),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def update_schedule_slot(
+    db_path: str,
+    schedule_id: int,
+    weekday: Optional[int] = None,
+    start_time: Optional[str] = None,
+    duration_min: Optional[int] = None,
+    room_name=_UNSET,
+    valid_from=_UNSET,
+    valid_to=_UNSET,
+) -> None:
+    fields = []
+    values: list = []
+    if weekday is not None:
+        fields.append("day_of_week = ?")
+        values.append(weekday)
+    if start_time is not None:
+        fields.append("time_hhmm = ?")
+        values.append(start_time)
+    if duration_min is not None:
+        fields.append("duration_min = ?")
+        values.append(duration_min)
+    if room_name is not _UNSET:
+        fields.append("room_name = ?")
+        values.append(room_name)
+    if valid_from is not _UNSET:
+        fields.append("valid_from = ?")
+        values.append(valid_from)
+    if valid_to is not _UNSET:
+        fields.append("valid_to = ?")
+        values.append(valid_to)
+    if not fields:
+        return
+    values.append(schedule_id)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE schedule SET {', '.join(fields)} WHERE schedule_id = ?",
+            tuple(values),
+        )
+        conn.commit()
+
+
+def delete_schedule_slot(db_path: str, schedule_id: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM schedule WHERE schedule_id = ?", (schedule_id,))
+        conn.commit()
+
+
+def toggle_schedule_slot(db_path: str, schedule_id: int, is_active: bool) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE schedule SET is_active = ? WHERE schedule_id = ?",
+            (1 if is_active else 0, schedule_id),
         )
         conn.commit()
 

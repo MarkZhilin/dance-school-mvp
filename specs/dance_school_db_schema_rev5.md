@@ -1,5 +1,5 @@
 # MVP БД для школы танцев (SQLite)
-Версия: 2026-02-01 (rev4: **отсрочка** + роль **owner**)
+??????: 2026-02-04 (rev5: **trainers** + **schedule**)
 
 Ключевые решения MVP:
 - Канал: **только Telegram**
@@ -77,8 +77,18 @@ CREATE TABLE IF NOT EXISTS schedule (
   day_of_week  INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
   time_hhmm    TEXT NOT NULL,               -- "18:30"
   duration_min INTEGER NOT NULL CHECK (duration_min > 0),
-  is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+  room_name    TEXT,
+  valid_from   TEXT,
+  valid_to     TEXT,
+  is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS ix_schedule_group_weekday
+  ON schedule(group_id, day_of_week);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_schedule_unique_slot
+  ON schedule(group_id, day_of_week, time_hhmm);
 
 -- ========= clients =========
 CREATE TABLE IF NOT EXISTS clients (

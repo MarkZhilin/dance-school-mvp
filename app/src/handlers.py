@@ -32,6 +32,7 @@ from db import (
     get_last_expense,
     get_or_create_single_visit,
     get_group_by_id,
+    get_schedule_by_id,
     get_trainer_by_id,
     is_admin_active,
     list_groups,
@@ -45,7 +46,12 @@ from db import (
     list_expense_categories,
     list_expenses,
     rename_group,
+    list_schedule_for_group,
     search_clients_by_name,
+    add_schedule_slot,
+    update_schedule_slot,
+    delete_schedule_slot,
+    toggle_schedule_slot,
     set_group_active,
     set_group_trainer,
     set_trainer_active,
@@ -124,6 +130,10 @@ from keyboards import (
     TRAINER_DETACH_GROUP_BACK,
     GROUP_ASSIGN_TRAINER_NEW,
     GROUP_ASSIGN_TRAINER_BACK,
+    SCHEDULE_MENU_BUTTONS,
+    SCHEDULE_WEEKDAY_BUTTONS,
+    SCHEDULE_EDIT_BUTTONS,
+    SCHEDULE_DELETE_BUTTONS,
     SEARCH_MENU_BUTTONS,
     SKIP_BUTTONS,
     add_group_keyboard,
@@ -155,6 +165,14 @@ from keyboards import (
     group_actions_keyboard,
     group_assign_trainer_keyboard,
     group_create_assign_keyboard,
+    schedule_menu_keyboard,
+    schedule_weekday_keyboard,
+    schedule_time_keyboard,
+    schedule_duration_keyboard,
+    schedule_room_keyboard,
+    schedule_slots_keyboard,
+    schedule_edit_keyboard,
+    schedule_delete_confirm_keyboard,
     payment_close_date_keyboard,
     payment_close_method_keyboard,
     payment_date_keyboard,
@@ -345,6 +363,22 @@ class GroupStates(StatesGroup):
     assign_trainer_select = State()
     assign_trainer_name = State()
     rename = State()
+
+
+class ScheduleStates(StatesGroup):
+    menu = State()
+    add_weekday = State()
+    add_time = State()
+    add_duration = State()
+    add_room = State()
+    add_confirm = State()
+    edit_select = State()
+    edit_menu = State()
+    edit_time = State()
+    edit_duration = State()
+    edit_room = State()
+    delete_select = State()
+    delete_confirm = State()
 
 
 def _is_owner(message: Message, config: Config) -> bool:
@@ -852,6 +886,51 @@ def _format_group_card(group: tuple) -> str:
         f"Зал: {room_label}\n"
         f"Статус: {status_label}"
     )
+
+
+_WEEKDAY_LABELS = {
+    1: "Пн",
+    2: "Вт",
+    3: "Ср",
+    4: "Чт",
+    5: "Пт",
+    6: "Сб",
+    7: "Вс",
+}
+_WEEKDAY_TEXT_TO_NUM = {value: key for key, value in _WEEKDAY_LABELS.items()}
+
+
+def _weekday_label(weekday: int) -> str:
+    return _WEEKDAY_LABELS.get(weekday, str(weekday))
+
+
+def _parse_hhmm(value: str) -> Optional[str]:
+    value = value.strip()
+    try:
+        parsed = datetime.strptime(value, "%H:%M")
+    except ValueError:
+        return None
+    return parsed.strftime("%H:%M")
+
+
+def _format_schedule_slot(day_of_week: int, time_hhmm: str, duration_min: int, room_name: Optional[str]) -> str:
+    base = f"{_weekday_label(day_of_week)} {time_hhmm} ({duration_min}м)"
+    if room_name:
+        return f"{base}, зал: {room_name}"
+    return base
+
+
+def _format_schedule_list(group_name: str, slots: list[tuple]) -> str:
+    if not slots:
+        return f"Расписание группы {group_name}:\nнет занятий"
+    lines = [f"Расписание группы {group_name}:"]
+    for slot in slots:
+        _, day_of_week, time_hhmm, duration_min, room_name, is_active = slot
+        line = _format_schedule_slot(day_of_week, time_hhmm, duration_min, room_name)
+        if int(is_active) == 0:
+            line = f"{line} ⛔"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _format_client_card(
@@ -4086,6 +4165,18 @@ async def _show_group_card(message: Message, config: Config, state: FSMContext, 
     )
 
 
+async def _show_schedule_menu(message: Message, config: Config, state: FSMContext, group_id: int) -> None:
+    group = get_group_by_id(config.db_path, group_id)
+    if not group:
+        await message.answer("Группа не найдена", reply_markup=groups_menu_keyboard())
+        await state.set_state(GroupStates.menu)
+        return
+    slots = list_schedule_for_group(config.db_path, group_id, include_inactive=True)
+    await state.update_data(schedule_group_id=group_id)
+    await state.set_state(ScheduleStates.menu)
+    await message.answer(_format_schedule_list(group[1], slots), reply_markup=schedule_menu_keyboard())
+
+
 @router.message(TrainerStates.menu)
 async def handle_trainers_menu_choice(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
@@ -4713,6 +4804,19 @@ async def handle_group_rename_start(message: Message, config: Config, state: FSM
 
 
 @router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[4])
+async def handle_group_schedule(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    await _show_schedule_menu(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[5])
 async def handle_group_hide(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
         await _deny_and_menu(message, config, state)
@@ -4724,7 +4828,7 @@ async def handle_group_hide(message: Message, config: Config, state: FSMContext)
         await _show_group_card(message, config, state, int(group_id))
 
 
-@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[5])
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[6])
 async def handle_group_activate(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
         await _deny_and_menu(message, config, state)
@@ -4736,7 +4840,7 @@ async def handle_group_activate(message: Message, config: Config, state: FSMCont
         await _show_group_card(message, config, state, int(group_id))
 
 
-@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[6])
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[7])
 async def handle_group_card_back(message: Message, config: Config, state: FSMContext) -> None:
     if not _has_access(message, config):
         await _deny_and_menu(message, config, state)
@@ -4809,3 +4913,356 @@ async def handle_group_rename(message: Message, config: Config, state: FSMContex
         return
     rename_group(config.db_path, int(group_id), message.text.strip())
     await _show_group_card(message, config, state, int(group_id))
+
+
+def _schedule_choice_label(slot: tuple) -> str:
+    schedule_id, day_of_week, time_hhmm, duration_min, room_name, is_active = slot
+    label = _format_schedule_slot(day_of_week, time_hhmm, duration_min, room_name)
+    if int(is_active) == 0:
+        label = f"{label} ⛔"
+    return f"{schedule_id}) {label}"
+
+
+@router.message(ScheduleStates.menu)
+async def handle_schedule_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("schedule_group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    if message.text == SCHEDULE_MENU_BUTTONS[0]:
+        await state.set_state(ScheduleStates.add_weekday)
+        await message.answer("Выберите день", reply_markup=schedule_weekday_keyboard())
+        return
+    if message.text == SCHEDULE_MENU_BUTTONS[1]:
+        slots = list_schedule_for_group(config.db_path, int(group_id), include_inactive=True)
+        if not slots:
+            await message.answer("Расписание пустое", reply_markup=schedule_menu_keyboard())
+            return
+        labels = [_schedule_choice_label(slot) for slot in slots]
+        await state.set_state(ScheduleStates.edit_select)
+        await message.answer("Выберите слот", reply_markup=schedule_slots_keyboard(labels))
+        return
+    if message.text == SCHEDULE_MENU_BUTTONS[2]:
+        slots = list_schedule_for_group(config.db_path, int(group_id), include_inactive=True)
+        if not slots:
+            await message.answer("Расписание пустое", reply_markup=schedule_menu_keyboard())
+            return
+        labels = [_schedule_choice_label(slot) for slot in slots]
+        await state.set_state(ScheduleStates.delete_select)
+        await message.answer("Выберите слот для удаления", reply_markup=schedule_slots_keyboard(labels))
+        return
+    if message.text == SCHEDULE_MENU_BUTTONS[3]:
+        await _show_group_card(message, config, state, int(group_id))
+        return
+    await message.answer("Выберите действие", reply_markup=schedule_menu_keyboard())
+
+
+@router.message(ScheduleStates.add_weekday)
+async def handle_schedule_add_weekday(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SCHEDULE_WEEKDAY_BUTTONS[7]:
+        data = await state.get_data()
+        group_id = data.get("schedule_group_id")
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    if not message.text or message.text not in _WEEKDAY_TEXT_TO_NUM:
+        await message.answer("Выберите день недели", reply_markup=schedule_weekday_keyboard())
+        return
+    await state.update_data(schedule_weekday=_WEEKDAY_TEXT_TO_NUM[message.text])
+    await state.set_state(ScheduleStates.add_time)
+    await message.answer("Введите время начала (HH:MM)", reply_markup=schedule_time_keyboard())
+
+
+@router.message(ScheduleStates.add_time)
+async def handle_schedule_add_time(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.add_weekday)
+        await message.answer("Выберите день", reply_markup=schedule_weekday_keyboard())
+        return
+    if not message.text:
+        await message.answer("Введите время начала (HH:MM)")
+        return
+    parsed = _parse_hhmm(message.text)
+    if not parsed:
+        await message.answer("Неверный формат времени, пример: 18:00")
+        return
+    await state.update_data(schedule_time=parsed)
+    await state.set_state(ScheduleStates.add_duration)
+    await message.answer("Длительность, мин (по умолчанию 60)", reply_markup=schedule_duration_keyboard())
+
+
+@router.message(ScheduleStates.add_duration)
+async def handle_schedule_add_duration(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.add_time)
+        await message.answer("Введите время начала (HH:MM)", reply_markup=schedule_time_keyboard())
+        return
+    if message.text == "Пропустить":
+        await state.update_data(schedule_duration=60)
+        await state.set_state(ScheduleStates.add_room)
+        await message.answer("Зал/комната (можно пропустить)", reply_markup=schedule_room_keyboard())
+        return
+    if not message.text or not message.text.isdigit():
+        await message.answer("Введите число минут или нажмите Пропустить")
+        return
+    duration = int(message.text)
+    if duration <= 0:
+        await message.answer("Длительность должна быть больше 0")
+        return
+    await state.update_data(schedule_duration=duration)
+    await state.set_state(ScheduleStates.add_room)
+    await message.answer("Зал/комната (можно пропустить)", reply_markup=schedule_room_keyboard())
+
+
+@router.message(ScheduleStates.add_room)
+async def handle_schedule_add_room(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.add_duration)
+        await message.answer("Длительность, мин (по умолчанию 60)", reply_markup=schedule_duration_keyboard())
+        return
+    room_name = None if message.text == "Пропустить" else (message.text or "").strip()
+    await state.update_data(schedule_room=room_name if room_name else None)
+    data = await state.get_data()
+    weekday = data.get("schedule_weekday")
+    time_hhmm = data.get("schedule_time")
+    duration = data.get("schedule_duration", 60)
+    summary = _format_schedule_slot(int(weekday), str(time_hhmm), int(duration), room_name)
+    await state.set_state(ScheduleStates.add_confirm)
+    await message.answer(f"Добавить слот?\n{summary}", reply_markup=confirm_keyboard())
+
+
+@router.message(ScheduleStates.add_confirm)
+async def handle_schedule_add_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("schedule_group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    if message.text == CONFIRM_BUTTONS[1]:
+        await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    if message.text != CONFIRM_BUTTONS[0]:
+        await message.answer("Выберите действие", reply_markup=confirm_keyboard())
+        return
+    try:
+        add_schedule_slot(
+            config.db_path,
+            int(group_id),
+            int(data.get("schedule_weekday")),
+            str(data.get("schedule_time")),
+            int(data.get("schedule_duration", 60)),
+            data.get("schedule_room"),
+        )
+    except sqlite3.IntegrityError:
+        await message.answer("Такой день/время уже добавлены")
+        await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    await message.answer("Слот добавлен ✅")
+    await _show_schedule_menu(message, config, state, int(group_id))
+
+
+@router.message(ScheduleStates.edit_select)
+async def handle_schedule_edit_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        data = await state.get_data()
+        group_id = data.get("schedule_group_id")
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    schedule_id = _parse_choice_id(message.text or "")
+    if schedule_id is None:
+        await message.answer("Выберите слот из списка")
+        return
+    slot = get_schedule_by_id(config.db_path, schedule_id)
+    if not slot:
+        await message.answer("Слот не найден")
+        return
+    data = await state.get_data()
+    group_id = data.get("schedule_group_id")
+    if group_id and int(slot[1]) != int(group_id):
+        await message.answer("Слот не найден")
+        return
+    await state.update_data(schedule_id=schedule_id, schedule_active=int(slot[6]))
+    label = _format_schedule_slot(int(slot[2]), str(slot[3]), int(slot[4]), slot[5])
+    await state.set_state(ScheduleStates.edit_menu)
+    await message.answer(f"Изменить слот:\n{label}", reply_markup=schedule_edit_keyboard(is_active=int(slot[6]) == 1))
+
+
+@router.message(ScheduleStates.edit_menu)
+async def handle_schedule_edit_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("schedule_group_id")
+    if message.text == SCHEDULE_EDIT_BUTTONS[0]:
+        await state.set_state(ScheduleStates.edit_time)
+        await message.answer("Введите новое время (HH:MM)", reply_markup=schedule_time_keyboard())
+        return
+    if message.text == SCHEDULE_EDIT_BUTTONS[1]:
+        await state.set_state(ScheduleStates.edit_duration)
+        await message.answer("Введите длительность, мин", reply_markup=schedule_duration_keyboard())
+        return
+    if message.text == SCHEDULE_EDIT_BUTTONS[2]:
+        await state.set_state(ScheduleStates.edit_room)
+        await message.answer("Введите зал/комнату (или Пропустить чтобы очистить)", reply_markup=schedule_room_keyboard())
+        return
+    if message.text == SCHEDULE_EDIT_BUTTONS[3] or message.text == SCHEDULE_EDIT_BUTTONS[4]:
+        schedule_id = data.get("schedule_id")
+        if schedule_id:
+            new_active = message.text == SCHEDULE_EDIT_BUTTONS[4]
+            toggle_schedule_slot(config.db_path, int(schedule_id), new_active)
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    if message.text == SCHEDULE_EDIT_BUTTONS[5]:
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    active = bool(data.get("schedule_active", 1))
+    await message.answer("Выберите действие", reply_markup=schedule_edit_keyboard(is_active=active))
+
+
+@router.message(ScheduleStates.edit_time)
+async def handle_schedule_edit_time(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.edit_menu)
+        data = await state.get_data()
+        active = bool(data.get("schedule_active", 1))
+        await message.answer("Выберите действие", reply_markup=schedule_edit_keyboard(is_active=active))
+        return
+    parsed = _parse_hhmm(message.text or "")
+    if not parsed:
+        await message.answer("Неверный формат времени, пример: 18:00")
+        return
+    data = await state.get_data()
+    schedule_id = data.get("schedule_id")
+    if schedule_id:
+        try:
+            update_schedule_slot(config.db_path, int(schedule_id), start_time=parsed)
+        except sqlite3.IntegrityError:
+            await message.answer("Такой день/время уже добавлены")
+    group_id = data.get("schedule_group_id")
+    if group_id:
+        await _show_schedule_menu(message, config, state, int(group_id))
+
+
+@router.message(ScheduleStates.edit_duration)
+async def handle_schedule_edit_duration(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.edit_menu)
+        data = await state.get_data()
+        active = bool(data.get("schedule_active", 1))
+        await message.answer("Выберите действие", reply_markup=schedule_edit_keyboard(is_active=active))
+        return
+    if message.text == "Пропустить":
+        data = await state.get_data()
+        group_id = data.get("schedule_group_id")
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    if not message.text or not message.text.isdigit():
+        await message.answer("Введите число минут")
+        return
+    duration = int(message.text)
+    if duration <= 0:
+        await message.answer("Длительность должна быть больше 0")
+        return
+    data = await state.get_data()
+    schedule_id = data.get("schedule_id")
+    if schedule_id:
+        update_schedule_slot(config.db_path, int(schedule_id), duration_min=duration)
+    group_id = data.get("schedule_group_id")
+    if group_id:
+        await _show_schedule_menu(message, config, state, int(group_id))
+
+
+@router.message(ScheduleStates.edit_room)
+async def handle_schedule_edit_room(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        await state.set_state(ScheduleStates.edit_menu)
+        data = await state.get_data()
+        active = bool(data.get("schedule_active", 1))
+        await message.answer("Выберите действие", reply_markup=schedule_edit_keyboard(is_active=active))
+        return
+    room_name = None if message.text == "Пропустить" else (message.text or "").strip()
+    data = await state.get_data()
+    schedule_id = data.get("schedule_id")
+    if schedule_id:
+        update_schedule_slot(config.db_path, int(schedule_id), room_name=room_name if room_name else None)
+    group_id = data.get("schedule_group_id")
+    if group_id:
+        await _show_schedule_menu(message, config, state, int(group_id))
+
+
+@router.message(ScheduleStates.delete_select)
+async def handle_schedule_delete_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == "↩️ Назад":
+        data = await state.get_data()
+        group_id = data.get("schedule_group_id")
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    schedule_id = _parse_choice_id(message.text or "")
+    if schedule_id is None:
+        await message.answer("Выберите слот из списка")
+        return
+    await state.update_data(schedule_id=schedule_id)
+    await state.set_state(ScheduleStates.delete_confirm)
+    await message.answer("Удалить слот?", reply_markup=schedule_delete_confirm_keyboard())
+
+
+@router.message(ScheduleStates.delete_confirm)
+async def handle_schedule_delete_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("schedule_group_id")
+    if message.text == SCHEDULE_DELETE_BUTTONS[1]:
+        if group_id:
+            await _show_schedule_menu(message, config, state, int(group_id))
+        return
+    if message.text != SCHEDULE_DELETE_BUTTONS[0]:
+        await message.answer("Выберите действие", reply_markup=schedule_delete_confirm_keyboard())
+        return
+    schedule_id = data.get("schedule_id")
+    if schedule_id:
+        delete_schedule_slot(config.db_path, int(schedule_id))
+        await message.answer("Слот удалён ✅")
+    if group_id:
+        await _show_schedule_menu(message, config, state, int(group_id))

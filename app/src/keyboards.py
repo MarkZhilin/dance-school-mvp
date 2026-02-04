@@ -68,6 +68,7 @@ GROUP_ACTION_BUTTONS = [
     "➕ Создать тренера и назначить",
     "❌ Убрать тренера",
     "✏️ Переименовать группу",
+    "📅 Расписание",
     "⛔️ Скрыть группу",
     "✅ Активировать группу",
     "↩️ Назад",
@@ -86,6 +87,38 @@ TRAINER_DETACH_GROUP_BACK = "↩️ Назад"
 
 GROUP_ASSIGN_TRAINER_NEW = "➕ Новый тренер"
 GROUP_ASSIGN_TRAINER_BACK = "↩️ Назад"
+
+SCHEDULE_MENU_BUTTONS = [
+    "➕ Добавить день",
+    "✏️ Изменить",
+    "🗑 Удалить",
+    "↩️ Назад",
+]
+
+SCHEDULE_WEEKDAY_BUTTONS = [
+    "Пн",
+    "Вт",
+    "Ср",
+    "Чт",
+    "Пт",
+    "Сб",
+    "Вс",
+    "↩️ Назад",
+]
+
+SCHEDULE_EDIT_BUTTONS = [
+    "🕒 Время",
+    "⏱ Длительность",
+    "🏠 Зал",
+    "⛔️ Отключить",
+    "✅ Включить",
+    "↩️ Назад",
+]
+
+SCHEDULE_DELETE_BUTTONS = [
+    "✅ Да удалить",
+    "❌ Отмена",
+]
 
 ADMIN_MENU_BUTTONS = [
     "➕ Добавить админа",
@@ -426,12 +459,13 @@ def group_actions_keyboard(is_active: bool) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=GROUP_ACTION_BUTTONS[1])],
         [KeyboardButton(text=GROUP_ACTION_BUTTONS[2])],
         [KeyboardButton(text=GROUP_ACTION_BUTTONS[3])],
+        [KeyboardButton(text=GROUP_ACTION_BUTTONS[4])],
     ]
     if is_active:
-        rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[4])])
-    else:
         rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[5])])
-    rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[6])])
+    else:
+        rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[6])])
+    rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[7])])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -449,6 +483,83 @@ def group_create_assign_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=GROUP_CREATE_ASSIGN_BUTTONS[2])],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def schedule_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=SCHEDULE_MENU_BUTTONS[0])],
+        [KeyboardButton(text=SCHEDULE_MENU_BUTTONS[1])],
+        [KeyboardButton(text=SCHEDULE_MENU_BUTTONS[2])],
+        [KeyboardButton(text=SCHEDULE_MENU_BUTTONS[3])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def schedule_weekday_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[0]),
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[1]),
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[2]),
+        ],
+        [
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[3]),
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[4]),
+            KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[5]),
+        ],
+        [KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[6])],
+        [KeyboardButton(text=SCHEDULE_WEEKDAY_BUTTONS[7])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def schedule_time_keyboard() -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text="↩️ Назад")]]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def schedule_duration_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="Пропустить")],
+        [KeyboardButton(text="↩️ Назад")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def schedule_room_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="Пропустить")],
+        [KeyboardButton(text="↩️ Назад")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def schedule_slots_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text="↩️ Назад")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def schedule_edit_keyboard(is_active: bool) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[0])],
+        [KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[1])],
+        [KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[2])],
+    ]
+    if is_active:
+        rows.append([KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[3])])
+    else:
+        rows.append([KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[4])])
+    rows.append([KeyboardButton(text=SCHEDULE_EDIT_BUTTONS[5])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def schedule_delete_confirm_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=SCHEDULE_DELETE_BUTTONS[0])],
+        [KeyboardButton(text=SCHEDULE_DELETE_BUTTONS[1])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
 
 
 def new_client_phone_keyboard() -> ReplyKeyboardMarkup:
