@@ -9,6 +9,8 @@ MAIN_MENU_BUTTONS = [
     "🎫 Абонемент",
     "💸 Расходы",
     "📊 Отчеты",
+    "🧑‍🏫 Тренеры",
+    "👥 Группы",
 ]
 
 REPORT_MENU_BUTTONS = [
@@ -38,6 +40,52 @@ REPORT_ACTION_BUTTONS = [
 ]
 
 REPORT_ATTENDANCE_TODAY_BUTTON = "👥 Кто был сегодня"
+
+TRAINERS_MENU_BUTTONS = [
+    "➕ Добавить тренера",
+    "📋 Список тренеров",
+    "↩️ Назад",
+]
+
+TRAINER_ACTION_BUTTONS = [
+    "➕ Привязать группу",
+    "➕ Создать группу",
+    "❌ Отвязать группу",
+    "✏️ Переименовать тренера",
+    "⛔️ Скрыть тренера",
+    "✅ Активировать тренера",
+    "↩️ Назад",
+]
+
+GROUPS_MENU_BUTTONS = [
+    "➕ Создать группу",
+    "📋 Список групп",
+    "↩️ Назад",
+]
+
+GROUP_ACTION_BUTTONS = [
+    "👤 Назначить тренера",
+    "➕ Создать тренера и назначить",
+    "❌ Убрать тренера",
+    "✏️ Переименовать группу",
+    "⛔️ Скрыть группу",
+    "✅ Активировать группу",
+    "↩️ Назад",
+]
+
+GROUP_CREATE_ASSIGN_BUTTONS = [
+    "👤 Выбрать тренера",
+    "➕ Создать тренера",
+    "Пропустить",
+]
+
+TRAINER_ATTACH_GROUP_NEW = "➕ Новая группа"
+TRAINER_ATTACH_GROUP_BACK = "↩️ Назад"
+
+TRAINER_DETACH_GROUP_BACK = "↩️ Назад"
+
+GROUP_ASSIGN_TRAINER_NEW = "➕ Новый тренер"
+GROUP_ASSIGN_TRAINER_BACK = "↩️ Назад"
 
 ADMIN_MENU_BUTTONS = [
     "➕ Добавить админа",
@@ -261,6 +309,7 @@ def main_menu_keyboard(user_id: int, owner_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=MAIN_MENU_BUTTONS[2]), KeyboardButton(text=MAIN_MENU_BUTTONS[3])],
         [KeyboardButton(text=MAIN_MENU_BUTTONS[4]), KeyboardButton(text=MAIN_MENU_BUTTONS[5])],
         [KeyboardButton(text=MAIN_MENU_BUTTONS[6]), KeyboardButton(text=MAIN_MENU_BUTTONS[7])],
+        [KeyboardButton(text=MAIN_MENU_BUTTONS[8]), KeyboardButton(text=MAIN_MENU_BUTTONS[9])],
     ]
     if user_id == owner_id:
         rows.append([KeyboardButton(text="👑 Админы")])
@@ -310,6 +359,96 @@ def report_actions_keyboard(include_attendance_today: bool = False) -> ReplyKeyb
 def report_date_input_keyboard() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text="↩️ Назад")]]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def trainers_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=TRAINERS_MENU_BUTTONS[0])],
+        [KeyboardButton(text=TRAINERS_MENU_BUTTONS[1])],
+        [KeyboardButton(text=TRAINERS_MENU_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def trainers_list_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=TRAINERS_MENU_BUTTONS[0])])
+    rows.append([KeyboardButton(text=TRAINERS_MENU_BUTTONS[2])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def trainer_actions_keyboard(is_active: bool) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=TRAINER_ACTION_BUTTONS[0]), KeyboardButton(text=TRAINER_ACTION_BUTTONS[1])],
+        [KeyboardButton(text=TRAINER_ACTION_BUTTONS[2])],
+        [KeyboardButton(text=TRAINER_ACTION_BUTTONS[3])],
+    ]
+    if is_active:
+        rows.append([KeyboardButton(text=TRAINER_ACTION_BUTTONS[4])])
+    else:
+        rows.append([KeyboardButton(text=TRAINER_ACTION_BUTTONS[5])])
+    rows.append([KeyboardButton(text=TRAINER_ACTION_BUTTONS[6])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def trainer_attach_group_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=TRAINER_ATTACH_GROUP_NEW)])
+    rows.append([KeyboardButton(text=TRAINER_ATTACH_GROUP_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def trainer_detach_group_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=TRAINER_DETACH_GROUP_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def groups_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=GROUPS_MENU_BUTTONS[0])],
+        [KeyboardButton(text=GROUPS_MENU_BUTTONS[1])],
+        [KeyboardButton(text=GROUPS_MENU_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def groups_list_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=GROUPS_MENU_BUTTONS[0])])
+    rows.append([KeyboardButton(text=GROUPS_MENU_BUTTONS[2])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def group_actions_keyboard(is_active: bool) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=GROUP_ACTION_BUTTONS[0])],
+        [KeyboardButton(text=GROUP_ACTION_BUTTONS[1])],
+        [KeyboardButton(text=GROUP_ACTION_BUTTONS[2])],
+        [KeyboardButton(text=GROUP_ACTION_BUTTONS[3])],
+    ]
+    if is_active:
+        rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[4])])
+    else:
+        rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[5])])
+    rows.append([KeyboardButton(text=GROUP_ACTION_BUTTONS[6])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def group_assign_trainer_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=GROUP_ASSIGN_TRAINER_NEW)])
+    rows.append([KeyboardButton(text=GROUP_ASSIGN_TRAINER_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def group_create_assign_keyboard() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=GROUP_CREATE_ASSIGN_BUTTONS[0])],
+        [KeyboardButton(text=GROUP_CREATE_ASSIGN_BUTTONS[1])],
+        [KeyboardButton(text=GROUP_CREATE_ASSIGN_BUTTONS[2])],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def new_client_phone_keyboard() -> ReplyKeyboardMarkup:

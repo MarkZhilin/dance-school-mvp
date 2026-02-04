@@ -28,12 +28,28 @@ def init_db(db_path: str) -> None:
               group_id     INTEGER PRIMARY KEY AUTOINCREMENT,
               name         TEXT NOT NULL,
               trainer_name TEXT,
+              trainer_id   INTEGER,
               capacity     INTEGER NOT NULL DEFAULT 0 CHECK (capacity >= 0),
               room_name    TEXT,
               is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trainers (
+              trainer_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+              full_name    TEXT NOT NULL,
+              phone        TEXT,
+              tg_user_id   INTEGER,
+              tg_username  TEXT,
+              is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+              created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_trainers_active ON trainers(is_active);")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_trainers_tg_user_id ON trainers(tg_user_id);")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS schedule (
@@ -188,7 +204,15 @@ def init_db(db_path: str) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_expenses_date ON expenses(exp_date);")
+        _ensure_groups_trainer_column(conn)
         conn.commit()
+
+
+def _ensure_groups_trainer_column(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(groups);")
+    columns = {row[1] for row in cur.fetchall()}
+    if "trainer_id" not in columns:
+        conn.execute("ALTER TABLE groups ADD COLUMN trainer_id INTEGER;")
 
 
 def upsert_admin(db_path: str, tg_user_id: int, name: str) -> None:
@@ -330,11 +354,11 @@ def create_client(
         return int(cur.lastrowid)
 
 
-def list_active_groups(db_path: str) -> List[Tuple[int, str, Optional[str], int, Optional[str]]]:
+def list_active_groups(db_path: str) -> List[Tuple[int, str, Optional[str], int, Optional[str], Optional[int]]]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
             """
-            SELECT group_id, name, trainer_name, capacity, room_name
+            SELECT group_id, name, trainer_name, capacity, room_name, trainer_id
             FROM groups
             WHERE is_active = 1
             ORDER BY name COLLATE NOCASE
@@ -349,14 +373,28 @@ def create_group(
     trainer_name: Optional[str] = None,
     capacity: int = 0,
     room_name: Optional[str] = None,
+    is_active: int = 1,
+    trainer_id: Optional[int] = None,
 ) -> int:
     with sqlite3.connect(db_path) as conn:
+        resolved_trainer_name = trainer_name
+        resolved_trainer_id = trainer_id
+        if resolved_trainer_id is not None:
+            cur = conn.execute(
+                "SELECT full_name, is_active FROM trainers WHERE trainer_id = ?",
+                (resolved_trainer_id,),
+            )
+            row = cur.fetchone()
+            if not row or int(row[1]) != 1:
+                raise ValueError("Trainer not found or inactive")
+            if not resolved_trainer_name:
+                resolved_trainer_name = row[0]
         cur = conn.execute(
             """
-            INSERT INTO groups(name, trainer_name, capacity, room_name, is_active)
-            VALUES (?, ?, ?, ?, 1)
+            INSERT INTO groups(name, trainer_name, trainer_id, capacity, room_name, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (name, trainer_name, capacity, room_name),
+            (name, resolved_trainer_name, resolved_trainer_id, capacity, room_name, is_active),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -421,13 +459,186 @@ def get_pass_by_id(db_path: str, pass_id: int) -> Optional[Tuple]:
         return cur.fetchone()
 
 
-def get_group_by_id(db_path: str, group_id: int) -> Optional[Tuple[int, str]]:
+def get_group_by_id(db_path: str, group_id: int) -> Optional[Tuple]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
-            "SELECT group_id, name FROM groups WHERE group_id = ? LIMIT 1",
+            """
+            SELECT group_id, name, trainer_id, trainer_name, capacity, room_name, is_active
+            FROM groups
+            WHERE group_id = ?
+            LIMIT 1
+            """,
             (group_id,),
         )
         return cur.fetchone()
+
+
+def list_groups(db_path: str, include_inactive: bool = False) -> List[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        if include_inactive:
+            cur = conn.execute(
+                """
+                SELECT group_id, name, trainer_id, trainer_name, capacity, room_name, is_active
+                FROM groups
+                ORDER BY name COLLATE NOCASE
+                """
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT group_id, name, trainer_id, trainer_name, capacity, room_name, is_active
+                FROM groups
+                WHERE is_active = 1
+                ORDER BY name COLLATE NOCASE
+                """
+            )
+        return cur.fetchall()
+
+
+def list_groups_by_trainer(db_path: str, trainer_id: int) -> List[Tuple[int, str, int, Optional[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT group_id, name, capacity, room_name
+            FROM groups
+            WHERE trainer_id = ?
+            ORDER BY name COLLATE NOCASE
+            """,
+            (trainer_id,),
+        )
+        return cur.fetchall()
+
+
+def rename_group(db_path: str, group_id: int, new_name: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE groups SET name = ? WHERE group_id = ?", (new_name, group_id))
+        conn.commit()
+
+
+def set_group_active(db_path: str, group_id: int, is_active: bool) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE groups SET is_active = ? WHERE group_id = ?",
+            (1 if is_active else 0, group_id),
+        )
+        conn.commit()
+
+
+def set_group_trainer(db_path: str, group_id: int, trainer_id: int) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT full_name, is_active FROM trainers WHERE trainer_id = ?",
+            (trainer_id,),
+        )
+        row = cur.fetchone()
+        if not row or int(row[1]) != 1:
+            return False
+        trainer_name = row[0]
+        conn.execute(
+            "UPDATE groups SET trainer_id = ?, trainer_name = ? WHERE group_id = ?",
+            (trainer_id, trainer_name, group_id),
+        )
+        conn.commit()
+        return True
+
+
+def clear_group_trainer(db_path: str, group_id: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE groups SET trainer_id = NULL, trainer_name = NULL WHERE group_id = ?",
+            (group_id,),
+        )
+        conn.commit()
+
+
+def create_trainer(
+    db_path: str,
+    full_name: str,
+    phone: Optional[str] = None,
+    tg_user_id: Optional[int] = None,
+    tg_username: Optional[str] = None,
+) -> int:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO trainers(full_name, phone, tg_user_id, tg_username, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            """,
+            (full_name, phone, tg_user_id, tg_username),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_active_trainers(db_path: str) -> List[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT trainer_id, full_name, phone, tg_user_id, tg_username, is_active
+            FROM trainers
+            WHERE is_active = 1
+            ORDER BY full_name COLLATE NOCASE
+            """
+        )
+        return cur.fetchall()
+
+
+def list_trainers(db_path: str, include_inactive: bool = False) -> List[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        if include_inactive:
+            cur = conn.execute(
+                """
+                SELECT trainer_id, full_name, phone, tg_user_id, tg_username, is_active
+                FROM trainers
+                ORDER BY full_name COLLATE NOCASE
+                """
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT trainer_id, full_name, phone, tg_user_id, tg_username, is_active
+                FROM trainers
+                WHERE is_active = 1
+                ORDER BY full_name COLLATE NOCASE
+                """
+            )
+        return cur.fetchall()
+
+
+def get_trainer_by_id(db_path: str, trainer_id: int) -> Optional[Tuple]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT trainer_id, full_name, phone, tg_user_id, tg_username, is_active
+            FROM trainers
+            WHERE trainer_id = ?
+            LIMIT 1
+            """,
+            (trainer_id,),
+        )
+        return cur.fetchone()
+
+
+def update_trainer_name(db_path: str, trainer_id: int, new_name: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE trainers SET full_name = ? WHERE trainer_id = ?",
+            (new_name, trainer_id),
+        )
+        conn.execute(
+            "UPDATE groups SET trainer_name = ? WHERE trainer_id = ?",
+            (new_name, trainer_id),
+        )
+        conn.commit()
+
+
+def set_trainer_active(db_path: str, trainer_id: int, is_active: bool) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE trainers SET is_active = ? WHERE trainer_id = ?",
+            (1 if is_active else 0, trainer_id),
+        )
+        conn.commit()
 
 
 def upsert_client_group_active(db_path: str, client_id: int, group_id: int) -> None:

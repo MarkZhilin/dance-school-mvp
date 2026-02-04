@@ -18,10 +18,12 @@ from db import (
     create_payment_pass,
     create_payment_single,
     create_single_visit_booked,
+    create_trainer,
     create_pass,
     create_expense,
     create_expense_category,
     deactivate_admin,
+    clear_group_trainer,
     get_client_by_id,
     get_client_by_phone,
     get_client_by_tg_username,
@@ -29,19 +31,29 @@ from db import (
     get_expense_by_id,
     get_last_expense,
     get_or_create_single_visit,
+    get_group_by_id,
+    get_trainer_by_id,
     is_admin_active,
+    list_groups,
+    list_groups_by_trainer,
     list_clients_for_attendance,
     list_active_groups,
     list_active_passes,
     list_admins,
+    list_active_trainers,
     list_deferred_payments_by_client,
     list_expense_categories,
     list_expenses,
+    rename_group,
     search_clients_by_name,
+    set_group_active,
+    set_group_trainer,
+    set_trainer_active,
     close_deferred_payment,
     get_payment_by_id,
     get_defer_summary,
     rename_expense_category,
+    update_trainer_name,
     set_expense_category_active,
     update_expense,
     delete_expense,
@@ -102,6 +114,16 @@ from keyboards import (
     REPORT_ATTENDANCE_TODAY_BUTTON,
     REPORT_MENU_BUTTONS,
     REPORT_PERIOD_BUTTONS,
+    TRAINERS_MENU_BUTTONS,
+    TRAINER_ACTION_BUTTONS,
+    GROUPS_MENU_BUTTONS,
+    GROUP_ACTION_BUTTONS,
+    GROUP_CREATE_ASSIGN_BUTTONS,
+    TRAINER_ATTACH_GROUP_NEW,
+    TRAINER_ATTACH_GROUP_BACK,
+    TRAINER_DETACH_GROUP_BACK,
+    GROUP_ASSIGN_TRAINER_NEW,
+    GROUP_ASSIGN_TRAINER_BACK,
     SEARCH_MENU_BUTTONS,
     SKIP_BUTTONS,
     add_group_keyboard,
@@ -123,6 +145,16 @@ from keyboards import (
     report_date_input_keyboard,
     report_menu_keyboard,
     report_period_keyboard,
+    trainers_menu_keyboard,
+    trainers_list_keyboard,
+    trainer_actions_keyboard,
+    trainer_attach_group_keyboard,
+    trainer_detach_group_keyboard,
+    groups_menu_keyboard,
+    groups_list_keyboard,
+    group_actions_keyboard,
+    group_assign_trainer_keyboard,
+    group_create_assign_keyboard,
     payment_close_date_keyboard,
     payment_close_method_keyboard,
     payment_date_keyboard,
@@ -283,6 +315,38 @@ class ReportStates(StatesGroup):
     attendance_today_group = State()
 
 
+class TrainerStates(StatesGroup):
+    menu = State()
+    add_name = State()
+    add_phone = State()
+    add_tg = State()
+    add_confirm = State()
+    list_select = State()
+    card = State()
+    attach_group_select = State()
+    create_group_name = State()
+    create_group_capacity = State()
+    create_group_room = State()
+    detach_group_select = State()
+    rename = State()
+
+
+class GroupStates(StatesGroup):
+    menu = State()
+    create_name = State()
+    create_capacity = State()
+    create_room = State()
+    create_assign = State()
+    create_assign_select = State()
+    create_trainer_name = State()
+    create_confirm = State()
+    list_select = State()
+    card = State()
+    assign_trainer_select = State()
+    assign_trainer_name = State()
+    rename = State()
+
+
 def _is_owner(message: Message, config: Config) -> bool:
     return message.from_user is not None and message.from_user.id == config.owner_tg_user_id
 
@@ -344,6 +408,21 @@ def _parse_iso_date(value: str) -> Optional[str]:
 
 def _format_group_label(group_id: int, name: str) -> str:
     return f"{name} (id:{group_id})"
+
+
+def _format_choice_label(item_id: int, name: str) -> str:
+    return f"{item_id}) {name}"
+
+
+def _parse_choice_id(text: str) -> Optional[int]:
+    if not text:
+        return None
+    if ")" not in text:
+        return None
+    prefix = text.split(")", 1)[0].strip()
+    if not prefix.isdigit():
+        return None
+    return int(prefix)
 
 
 def _format_booking_summary(
@@ -737,6 +816,42 @@ async def _prepare_payment_group_selection(
 
 def _format_attendance_client_label(full_name: str, phone: str) -> str:
     return f"{full_name} ({phone})"
+
+
+def _format_trainer_card(trainer: tuple, groups: list[tuple]) -> str:
+    trainer_id, full_name, phone, tg_user_id, tg_username, is_active = trainer
+    phone_line = phone or "—"
+    tg_value = tg_username or "—"
+    if tg_value != "—" and not tg_value.startswith("@"):
+        tg_value = f"@{tg_value}"
+    status_label = "active" if int(is_active) == 1 else "inactive"
+    if groups:
+        group_lines = [f"- {_format_choice_label(g[0], g[1])}" for g in groups]
+        groups_text = "\n".join(group_lines)
+    else:
+        groups_text = "нет групп"
+    return (
+        f"Тренер: {full_name}\n"
+        f"Телефон: {phone_line}\n"
+        f"TG: {tg_value}\n"
+        f"Статус: {status_label}\n"
+        f"Группы:\n{groups_text}"
+    )
+
+
+def _format_group_card(group: tuple) -> str:
+    group_id, name, trainer_id, trainer_name, capacity, room_name, is_active = group
+    trainer_label = trainer_name or "не назначен"
+    capacity_label = capacity if capacity is not None else 0
+    room_label = room_name or "—"
+    status_label = "active" if int(is_active) == 1 else "inactive"
+    return (
+        f"Группа: {name}\n"
+        f"Тренер: {trainer_label}\n"
+        f"Вместимость: {capacity_label}\n"
+        f"Зал: {room_label}\n"
+        f"Статус: {status_label}"
+    )
 
 
 def _format_client_card(
@@ -3467,6 +3582,26 @@ async def handle_reports_menu(message: Message, config: Config, state: FSMContex
     await message.answer("Отчеты", reply_markup=report_menu_keyboard())
 
 
+@router.message(F.text == MAIN_MENU_BUTTONS[8])
+async def handle_trainers_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(TrainerStates.menu)
+    await message.answer("Тренеры", reply_markup=trainers_menu_keyboard())
+
+
+@router.message(F.text == MAIN_MENU_BUTTONS[9])
+async def handle_groups_menu(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.clear()
+    await state.set_state(GroupStates.menu)
+    await message.answer("Группы", reply_markup=groups_menu_keyboard())
+
+
 @router.message(
     F.text.in_(MAIN_MENU_BUTTONS)
     & (F.text != MAIN_MENU_BUTTONS[0])
@@ -3477,6 +3612,8 @@ async def handle_reports_menu(message: Message, config: Config, state: FSMContex
     & (F.text != MAIN_MENU_BUTTONS[5])
     & (F.text != MAIN_MENU_BUTTONS[6])
     & (F.text != MAIN_MENU_BUTTONS[7])
+    & (F.text != MAIN_MENU_BUTTONS[8])
+    & (F.text != MAIN_MENU_BUTTONS[9])
 )
 async def handle_main_menu(message: Message, config: Config) -> None:
     if not message.text:
@@ -3908,3 +4045,767 @@ async def handle_report_attendance_today_group(message: Message, config: Config,
         text = f"Сегодня в группе {group_name} никто не отмечен"
     await state.set_state(ReportStates.view)
     await message.answer(text, reply_markup=report_actions_keyboard(include_attendance_today=True))
+
+
+async def _show_trainers_menu(message: Message, state: FSMContext) -> None:
+    await state.set_state(TrainerStates.menu)
+    await message.answer("Тренеры", reply_markup=trainers_menu_keyboard())
+
+
+async def _show_groups_menu(message: Message, state: FSMContext) -> None:
+    await state.set_state(GroupStates.menu)
+    await message.answer("Группы", reply_markup=groups_menu_keyboard())
+
+
+async def _show_trainer_card(message: Message, config: Config, state: FSMContext, trainer_id: int) -> None:
+    trainer = get_trainer_by_id(config.db_path, trainer_id)
+    if not trainer:
+        await message.answer("Тренер не найден", reply_markup=trainers_menu_keyboard())
+        await state.set_state(TrainerStates.menu)
+        return
+    groups = list_groups_by_trainer(config.db_path, trainer_id)
+    await state.update_data(trainer_id=trainer_id)
+    await state.set_state(TrainerStates.card)
+    await message.answer(
+        _format_trainer_card(trainer, groups),
+        reply_markup=trainer_actions_keyboard(is_active=int(trainer[5]) == 1),
+    )
+
+
+async def _show_group_card(message: Message, config: Config, state: FSMContext, group_id: int) -> None:
+    group = get_group_by_id(config.db_path, group_id)
+    if not group:
+        await message.answer("Группа не найдена", reply_markup=groups_menu_keyboard())
+        await state.set_state(GroupStates.menu)
+        return
+    await state.update_data(group_id=group_id)
+    await state.set_state(GroupStates.card)
+    await message.answer(
+        _format_group_card(group),
+        reply_markup=group_actions_keyboard(is_active=int(group[6]) == 1),
+    )
+
+
+@router.message(TrainerStates.menu)
+async def handle_trainers_menu_choice(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == TRAINERS_MENU_BUTTONS[0]:
+        await state.set_state(TrainerStates.add_name)
+        await message.answer("Введите ФИО тренера")
+        return
+    if message.text == TRAINERS_MENU_BUTTONS[1]:
+        trainers = list_active_trainers(config.db_path)
+        if not trainers:
+            await message.answer("Активных тренеров нет", reply_markup=trainers_menu_keyboard())
+            return
+        labels = [_format_choice_label(t[0], t[1]) for t in trainers]
+        await state.set_state(TrainerStates.list_select)
+        await message.answer("Выберите тренера", reply_markup=trainers_list_keyboard(labels))
+        return
+    if message.text == TRAINERS_MENU_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Главное меню", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await message.answer("Выберите действие", reply_markup=trainers_menu_keyboard())
+
+
+@router.message(TrainerStates.add_name)
+async def handle_trainer_add_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите ФИО тренера")
+        return
+    await state.update_data(trainer_full_name=message.text.strip())
+    await state.set_state(TrainerStates.add_phone)
+    await message.answer("Телефон (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(TrainerStates.add_phone)
+async def handle_trainer_add_phone(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        await state.clear()
+        await _show_trainers_menu(message, state)
+        return
+    if message.text == SKIP_BUTTONS[0]:
+        await state.update_data(trainer_phone=None)
+        await state.set_state(TrainerStates.add_tg)
+        await message.answer("Telegram username (можно пропустить)", reply_markup=skip_keyboard())
+        return
+
+    raw_phone = None
+    if message.contact and message.contact.phone_number:
+        raw_phone = message.contact.phone_number
+    elif message.text:
+        raw_phone = message.text.strip()
+
+    if not raw_phone:
+        await message.answer("Введите телефон или нажмите Пропустить")
+        return
+
+    normalized = _normalize_phone(raw_phone)
+    if not normalized:
+        await message.answer("Не удалось распознать телефон, попробуйте еще раз или пропустите")
+        return
+    await state.update_data(trainer_phone=normalized)
+    await state.set_state(TrainerStates.add_tg)
+    await message.answer("Telegram username (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(TrainerStates.add_tg)
+async def handle_trainer_add_tg(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        await state.clear()
+        await _show_trainers_menu(message, state)
+        return
+    if message.text == SKIP_BUTTONS[0]:
+        await state.update_data(trainer_tg=None)
+        await state.set_state(TrainerStates.add_confirm)
+        await message.answer("Сохранить тренера?", reply_markup=confirm_keyboard())
+        return
+    if not message.text:
+        await message.answer("Введите username или нажмите Пропустить")
+        return
+    normalized = _normalize_username(message.text)
+    if not normalized:
+        await message.answer("Введите username или нажмите Пропустить")
+        return
+    await state.update_data(trainer_tg=normalized)
+    await state.set_state(TrainerStates.add_confirm)
+    await message.answer("Сохранить тренера?", reply_markup=confirm_keyboard())
+
+
+@router.message(TrainerStates.add_confirm)
+async def handle_trainer_add_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == CONFIRM_BUTTONS[1]:
+        await state.clear()
+        await _show_trainers_menu(message, state)
+        return
+    if message.text != CONFIRM_BUTTONS[0]:
+        await message.answer("Выберите действие", reply_markup=confirm_keyboard())
+        return
+    data = await state.get_data()
+    trainer_id = create_trainer(
+        config.db_path,
+        full_name=str(data.get("trainer_full_name", "")).strip(),
+        phone=data.get("trainer_phone"),
+        tg_username=data.get("trainer_tg"),
+    )
+    await _show_trainer_card(message, config, state, trainer_id)
+
+
+@router.message(TrainerStates.list_select)
+async def handle_trainer_list_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == TRAINERS_MENU_BUTTONS[0]:
+        await state.set_state(TrainerStates.add_name)
+        await message.answer("Введите ФИО тренера")
+        return
+    if message.text == TRAINERS_MENU_BUTTONS[2]:
+        await _show_trainers_menu(message, state)
+        return
+    trainer_id = _parse_choice_id(message.text or "")
+    if trainer_id is None:
+        await message.answer("Выберите тренера из списка")
+        return
+    await _show_trainer_card(message, config, state, trainer_id)
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[0])
+async def handle_trainer_attach_group_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    groups = list_active_groups(config.db_path)
+    labels = [_format_choice_label(g[0], g[1]) for g in groups]
+    await state.set_state(TrainerStates.attach_group_select)
+    await message.answer("Выберите группу", reply_markup=trainer_attach_group_keyboard(labels))
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[1])
+async def handle_trainer_create_group_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.set_state(TrainerStates.create_group_name)
+    await message.answer("Название группы")
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[2])
+async def handle_trainer_detach_group_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if not trainer_id:
+        await message.answer("Тренер не выбран")
+        return
+    groups = list_groups_by_trainer(config.db_path, int(trainer_id))
+    if not groups:
+        await message.answer("У тренера нет групп")
+        await _show_trainer_card(message, config, state, int(trainer_id))
+        return
+    labels = [_format_choice_label(g[0], g[1]) for g in groups]
+    await state.set_state(TrainerStates.detach_group_select)
+    await message.answer("Выберите группу", reply_markup=trainer_detach_group_keyboard(labels))
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[3])
+async def handle_trainer_rename_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.set_state(TrainerStates.rename)
+    await message.answer("Введите новое имя тренера")
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[4])
+async def handle_trainer_hide(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if trainer_id:
+        set_trainer_active(config.db_path, int(trainer_id), False)
+        await _show_trainer_card(message, config, state, int(trainer_id))
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[5])
+async def handle_trainer_activate(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if trainer_id:
+        set_trainer_active(config.db_path, int(trainer_id), True)
+        await _show_trainer_card(message, config, state, int(trainer_id))
+
+
+@router.message(TrainerStates.card, F.text == TRAINER_ACTION_BUTTONS[6])
+async def handle_trainer_card_back(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_trainers_menu(message, state)
+
+
+@router.message(TrainerStates.attach_group_select)
+async def handle_trainer_attach_group_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == TRAINER_ATTACH_GROUP_BACK:
+        data = await state.get_data()
+        trainer_id = data.get("trainer_id")
+        if trainer_id:
+            await _show_trainer_card(message, config, state, int(trainer_id))
+        else:
+            await _show_trainers_menu(message, state)
+        return
+    if message.text == TRAINER_ATTACH_GROUP_NEW:
+        await state.set_state(TrainerStates.create_group_name)
+        await message.answer("Название группы")
+        return
+    group_id = _parse_choice_id(message.text or "")
+    if group_id is None:
+        await message.answer("Выберите группу из списка")
+        return
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if not trainer_id:
+        await message.answer("Тренер не выбран")
+        return
+    success = set_group_trainer(config.db_path, group_id, int(trainer_id))
+    if not success:
+        await message.answer("Не удалось назначить тренера")
+    await _show_trainer_card(message, config, state, int(trainer_id))
+
+
+@router.message(TrainerStates.create_group_name)
+async def handle_trainer_create_group_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите название группы")
+        return
+    await state.update_data(group_name=message.text.strip())
+    await state.set_state(TrainerStates.create_group_capacity)
+    await message.answer("Вместимость (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(TrainerStates.create_group_capacity)
+async def handle_trainer_create_group_capacity(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[0]:
+        await state.update_data(group_capacity=0)
+        await state.set_state(TrainerStates.create_group_room)
+        await message.answer("Зал (можно пропустить)", reply_markup=skip_keyboard())
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        data = await state.get_data()
+        trainer_id = data.get("trainer_id")
+        if trainer_id:
+            await _show_trainer_card(message, config, state, int(trainer_id))
+        else:
+            await _show_trainers_menu(message, state)
+        return
+    if not message.text or not message.text.isdigit():
+        await message.answer("Введите число или нажмите Пропустить")
+        return
+    await state.update_data(group_capacity=int(message.text))
+    await state.set_state(TrainerStates.create_group_room)
+    await message.answer("Зал (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(TrainerStates.create_group_room)
+async def handle_trainer_create_group_room(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        data = await state.get_data()
+        trainer_id = data.get("trainer_id")
+        if trainer_id:
+            await _show_trainer_card(message, config, state, int(trainer_id))
+        else:
+            await _show_trainers_menu(message, state)
+        return
+    room_name = None if message.text == SKIP_BUTTONS[0] else (message.text or "").strip()
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if not trainer_id:
+        await _show_trainers_menu(message, state)
+        return
+    try:
+        create_group(
+            config.db_path,
+            name=str(data.get("group_name", "")).strip(),
+            capacity=int(data.get("group_capacity", 0) or 0),
+            room_name=room_name if room_name else None,
+            trainer_id=int(trainer_id),
+        )
+    except ValueError:
+        await message.answer("Не удалось создать группу: тренер не найден или неактивен")
+    await _show_trainer_card(message, config, state, int(trainer_id))
+
+
+@router.message(TrainerStates.detach_group_select)
+async def handle_trainer_detach_group_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == TRAINER_DETACH_GROUP_BACK:
+        data = await state.get_data()
+        trainer_id = data.get("trainer_id")
+        if trainer_id:
+            await _show_trainer_card(message, config, state, int(trainer_id))
+        else:
+            await _show_trainers_menu(message, state)
+        return
+    group_id = _parse_choice_id(message.text or "")
+    if group_id is None:
+        await message.answer("Выберите группу из списка")
+        return
+    clear_group_trainer(config.db_path, group_id)
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if trainer_id:
+        await _show_trainer_card(message, config, state, int(trainer_id))
+        return
+    await _show_trainers_menu(message, state)
+
+
+@router.message(TrainerStates.rename)
+async def handle_trainer_rename(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите новое имя тренера")
+        return
+    data = await state.get_data()
+    trainer_id = data.get("trainer_id")
+    if not trainer_id:
+        await _show_trainers_menu(message, state)
+        return
+    update_trainer_name(config.db_path, int(trainer_id), message.text.strip())
+    await _show_trainer_card(message, config, state, int(trainer_id))
+
+
+@router.message(GroupStates.menu)
+async def handle_groups_menu_choice(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == GROUPS_MENU_BUTTONS[0]:
+        await state.set_state(GroupStates.create_name)
+        await message.answer("Введите название группы")
+        return
+    if message.text == GROUPS_MENU_BUTTONS[1]:
+        groups = list_groups(config.db_path, include_inactive=False)
+        if not groups:
+            await message.answer("Активных групп нет", reply_markup=groups_menu_keyboard())
+            return
+        labels = [_format_choice_label(g[0], g[1]) for g in groups]
+        await state.set_state(GroupStates.list_select)
+        await message.answer("Выберите группу", reply_markup=groups_list_keyboard(labels))
+        return
+    if message.text == GROUPS_MENU_BUTTONS[2]:
+        await state.clear()
+        await message.answer("Главное меню", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await message.answer("Выберите действие", reply_markup=groups_menu_keyboard())
+
+
+@router.message(GroupStates.create_name)
+async def handle_group_create_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите название группы")
+        return
+    await state.update_data(group_name=message.text.strip())
+    await state.set_state(GroupStates.create_capacity)
+    await message.answer("Вместимость (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(GroupStates.create_capacity)
+async def handle_group_create_capacity(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[0]:
+        await state.update_data(group_capacity=0)
+        await state.set_state(GroupStates.create_room)
+        await message.answer("Зал (можно пропустить)", reply_markup=skip_keyboard())
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        await _show_groups_menu(message, state)
+        return
+    if not message.text or not message.text.isdigit():
+        await message.answer("Введите число или нажмите Пропустить")
+        return
+    await state.update_data(group_capacity=int(message.text))
+    await state.set_state(GroupStates.create_room)
+    await message.answer("Зал (можно пропустить)", reply_markup=skip_keyboard())
+
+
+@router.message(GroupStates.create_room)
+async def handle_group_create_room(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == SKIP_BUTTONS[1]:
+        await _show_groups_menu(message, state)
+        return
+    room_name = None if message.text == SKIP_BUTTONS[0] else (message.text or "").strip()
+    await state.update_data(group_room=room_name if room_name else None)
+    await state.set_state(GroupStates.create_assign)
+    await message.answer("Назначить тренера?", reply_markup=group_create_assign_keyboard())
+
+
+@router.message(GroupStates.create_assign)
+async def handle_group_create_assign(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == GROUP_CREATE_ASSIGN_BUTTONS[0]:
+        trainers = list_active_trainers(config.db_path)
+        if not trainers:
+            await message.answer("Активных тренеров нет", reply_markup=group_create_assign_keyboard())
+            return
+        labels = [_format_choice_label(t[0], t[1]) for t in trainers]
+        await state.set_state(GroupStates.create_assign_select)
+        await message.answer("Выберите тренера", reply_markup=group_assign_trainer_keyboard(labels))
+        return
+    if message.text == GROUP_CREATE_ASSIGN_BUTTONS[1]:
+        await state.set_state(GroupStates.create_trainer_name)
+        await message.answer("Введите имя тренера")
+        return
+    if message.text == GROUP_CREATE_ASSIGN_BUTTONS[2]:
+        await state.update_data(group_trainer_id=None, group_trainer_name=None)
+        await state.set_state(GroupStates.create_confirm)
+        data = await state.get_data()
+        trainer_label = data.get("group_trainer_name") or "не назначен"
+        await message.answer(
+            f"Проверьте данные:\n"
+            f"Группа: {data.get('group_name')}\n"
+            f"Вместимость: {data.get('group_capacity', 0)}\n"
+            f"Зал: {data.get('group_room') or '—'}\n"
+            f"Тренер: {trainer_label}",
+            reply_markup=confirm_keyboard(),
+        )
+        return
+    await message.answer("Выберите действие", reply_markup=group_create_assign_keyboard())
+
+
+@router.message(GroupStates.create_assign_select)
+async def handle_group_create_assign_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == GROUP_ASSIGN_TRAINER_BACK:
+        await state.set_state(GroupStates.create_assign)
+        await message.answer("Назначить тренера?", reply_markup=group_create_assign_keyboard())
+        return
+    if message.text == GROUP_ASSIGN_TRAINER_NEW:
+        await state.set_state(GroupStates.create_trainer_name)
+        await message.answer("Введите имя тренера")
+        return
+    trainer_id = _parse_choice_id(message.text or "")
+    if trainer_id is None:
+        await message.answer("Выберите тренера из списка")
+        return
+    trainer = get_trainer_by_id(config.db_path, trainer_id)
+    if not trainer:
+        await message.answer("Тренер не найден")
+        return
+    await state.update_data(group_trainer_id=trainer_id, group_trainer_name=trainer[1])
+    await state.set_state(GroupStates.create_confirm)
+    data = await state.get_data()
+    await message.answer(
+        f"Проверьте данные:\n"
+        f"Группа: {data.get('group_name')}\n"
+        f"Вместимость: {data.get('group_capacity', 0)}\n"
+        f"Зал: {data.get('group_room') or '—'}\n"
+        f"Тренер: {trainer[1]}",
+        reply_markup=confirm_keyboard(),
+    )
+
+
+@router.message(GroupStates.create_trainer_name)
+async def handle_group_create_trainer_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите имя тренера")
+        return
+    trainer_id = create_trainer(config.db_path, message.text.strip())
+    await state.update_data(group_trainer_id=trainer_id, group_trainer_name=message.text.strip())
+    await state.set_state(GroupStates.create_confirm)
+    data = await state.get_data()
+    await message.answer(
+        f"Проверьте данные:\n"
+        f"Группа: {data.get('group_name')}\n"
+        f"Вместимость: {data.get('group_capacity', 0)}\n"
+        f"Зал: {data.get('group_room') or '—'}\n"
+        f"Тренер: {message.text.strip()}",
+        reply_markup=confirm_keyboard(),
+    )
+
+
+@router.message(GroupStates.create_confirm)
+async def handle_group_create_confirm(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == CONFIRM_BUTTONS[1]:
+        await _show_groups_menu(message, state)
+        return
+    if message.text != CONFIRM_BUTTONS[0]:
+        await message.answer("Выберите действие", reply_markup=confirm_keyboard())
+        return
+    data = await state.get_data()
+    try:
+        create_group(
+            config.db_path,
+            name=str(data.get("group_name", "")).strip(),
+            capacity=int(data.get("group_capacity", 0) or 0),
+            room_name=data.get("group_room"),
+            trainer_id=data.get("group_trainer_id"),
+            trainer_name=data.get("group_trainer_name"),
+        )
+    except ValueError:
+        await message.answer("Не удалось создать группу: тренер не найден или неактивен")
+        await _show_groups_menu(message, state)
+        return
+    await message.answer("Группа создана ✅")
+    await _show_groups_menu(message, state)
+
+
+@router.message(GroupStates.list_select)
+async def handle_group_list_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == GROUPS_MENU_BUTTONS[0]:
+        await state.set_state(GroupStates.create_name)
+        await message.answer("Введите название группы")
+        return
+    if message.text == GROUPS_MENU_BUTTONS[2]:
+        await _show_groups_menu(message, state)
+        return
+    group_id = _parse_choice_id(message.text or "")
+    if group_id is None:
+        await message.answer("Выберите группу из списка")
+        return
+    await _show_group_card(message, config, state, group_id)
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[0])
+async def handle_group_assign_trainer_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    trainers = list_active_trainers(config.db_path)
+    if not trainers:
+        await message.answer("Активных тренеров нет")
+        data = await state.get_data()
+        group_id = data.get("group_id")
+        if group_id:
+            await _show_group_card(message, config, state, int(group_id))
+        return
+    labels = [_format_choice_label(t[0], t[1]) for t in trainers]
+    await state.set_state(GroupStates.assign_trainer_select)
+    await message.answer("Выберите тренера", reply_markup=group_assign_trainer_keyboard(labels))
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[1])
+async def handle_group_create_trainer_assign(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.set_state(GroupStates.assign_trainer_name)
+    await message.answer("Введите имя тренера")
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[2])
+async def handle_group_clear_trainer(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if group_id:
+        clear_group_trainer(config.db_path, int(group_id))
+        await _show_group_card(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[3])
+async def handle_group_rename_start(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await state.set_state(GroupStates.rename)
+    await message.answer("Введите новое название группы")
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[4])
+async def handle_group_hide(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if group_id:
+        set_group_active(config.db_path, int(group_id), False)
+        await _show_group_card(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[5])
+async def handle_group_activate(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if group_id:
+        set_group_active(config.db_path, int(group_id), True)
+        await _show_group_card(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.card, F.text == GROUP_ACTION_BUTTONS[6])
+async def handle_group_card_back(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    await _show_groups_menu(message, state)
+
+
+@router.message(GroupStates.assign_trainer_select)
+async def handle_group_assign_trainer_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if message.text == GROUP_ASSIGN_TRAINER_BACK:
+        data = await state.get_data()
+        group_id = data.get("group_id")
+        if group_id:
+            await _show_group_card(message, config, state, int(group_id))
+        else:
+            await _show_groups_menu(message, state)
+        return
+    if message.text == GROUP_ASSIGN_TRAINER_NEW:
+        await state.set_state(GroupStates.assign_trainer_name)
+        await message.answer("Введите имя тренера")
+        return
+    trainer_id = _parse_choice_id(message.text or "")
+    if trainer_id is None:
+        await message.answer("Выберите тренера из списка")
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    success = set_group_trainer(config.db_path, int(group_id), trainer_id)
+    if not success:
+        await message.answer("Не удалось назначить тренера")
+    await _show_group_card(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.assign_trainer_name)
+async def handle_group_assign_trainer_name(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите имя тренера")
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    trainer_id = create_trainer(config.db_path, message.text.strip())
+    set_group_trainer(config.db_path, int(group_id), trainer_id)
+    await _show_group_card(message, config, state, int(group_id))
+
+
+@router.message(GroupStates.rename)
+async def handle_group_rename(message: Message, config: Config, state: FSMContext) -> None:
+    if not _has_access(message, config):
+        await _deny_and_menu(message, config, state)
+        return
+    if not message.text or message.text.strip() == "":
+        await message.answer("Введите новое название группы")
+        return
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    if not group_id:
+        await _show_groups_menu(message, state)
+        return
+    rename_group(config.db_path, int(group_id), message.text.strip())
+    await _show_group_card(message, config, state, int(group_id))
