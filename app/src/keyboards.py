@@ -127,6 +127,12 @@ ADMIN_MENU_BUTTONS = [
     "↩️ Назад",
 ]
 
+ADMIN_MANAGE_BUTTONS = [
+    "⛔ Отключить",
+    "✅ Активировать",
+    "↩️ Назад",
+]
+
 NEW_CLIENT_PHONE_BUTTONS = [
     "📱 Отправить контакт",
     "✍️ Ввести вручную",
@@ -355,6 +361,21 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=ADMIN_MENU_BUTTONS[2])],
         [KeyboardButton(text=ADMIN_MENU_BUTTONS[3])],
     ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def admin_select_keyboard(labels: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    rows.append([KeyboardButton(text=ADMIN_MENU_BUTTONS[3])])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def admin_manage_keyboard(is_active: bool) -> ReplyKeyboardMarkup:
+    if is_active:
+        rows = [[KeyboardButton(text=ADMIN_MANAGE_BUTTONS[0])]]
+    else:
+        rows = [[KeyboardButton(text=ADMIN_MANAGE_BUTTONS[1])]]
+    rows.append([KeyboardButton(text=ADMIN_MANAGE_BUTTONS[2])])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 

@@ -23,6 +23,7 @@ from db import (
     create_expense,
     create_expense_category,
     deactivate_admin,
+    get_admin_by_tg_user_id,
     clear_group_trainer,
     get_client_by_id,
     get_client_by_phone,
@@ -41,6 +42,7 @@ from db import (
     list_active_groups,
     list_active_passes,
     list_admins,
+    set_admin_active,
     list_active_trainers,
     list_deferred_payments_by_client,
     list_expense_categories,
@@ -130,6 +132,7 @@ from keyboards import (
     TRAINER_DETACH_GROUP_BACK,
     GROUP_ASSIGN_TRAINER_NEW,
     GROUP_ASSIGN_TRAINER_BACK,
+    ADMIN_MANAGE_BUTTONS,
     SCHEDULE_MENU_BUTTONS,
     SCHEDULE_WEEKDAY_BUTTONS,
     SCHEDULE_EDIT_BUTTONS,
@@ -151,6 +154,8 @@ from keyboards import (
     main_menu_keyboard,
     new_client_phone_keyboard,
     not_found_keyboard,
+    admin_select_keyboard,
+    admin_manage_keyboard,
     report_actions_keyboard,
     report_date_input_keyboard,
     report_menu_keyboard,
@@ -209,6 +214,8 @@ class AdminStates(StatesGroup):
     add_tg_id = State()
     add_name = State()
     disable_tg_id = State()
+    manage_select = State()
+    manage_action = State()
 
 
 class NewClientStates(StatesGroup):
@@ -3726,6 +3733,10 @@ async def handle_admin_add_tg_id(message: Message, config: Config, state: FSMCon
         await message.answer("Доступ запрещен")
         await state.clear()
         return
+    if message.text == ADMIN_MENU_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Меню админов", reply_markup=admin_menu_keyboard())
+        return
     if not message.text or not message.text.isdigit():
         await message.answer("Нужен tg_user_id числом")
         return
@@ -3739,6 +3750,10 @@ async def handle_admin_add_name(message: Message, config: Config, state: FSMCont
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
         await state.clear()
+        return
+    if message.text == ADMIN_MENU_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Меню админов", reply_markup=admin_menu_keyboard())
         return
     if not message.text or message.text.strip() == "":
         await message.answer("Имя не может быть пустым")
@@ -3756,8 +3771,17 @@ async def handle_admin_disable_start(message: Message, config: Config, state: FS
         await message.answer("Доступ запрещен")
         await state.clear()
         return
-    await state.set_state(AdminStates.disable_tg_id)
-    await message.answer("Введите tg_user_id для отключения")
+    active, inactive = list_admins(config.db_path)
+    combined = active + inactive
+    if not combined:
+        await message.answer("Админов пока нет", reply_markup=admin_menu_keyboard())
+        return
+    labels = [
+        _format_choice_label(rec.tg_user_id, f"{rec.name} ({'active' if rec.is_active else 'inactive'})")
+        for rec in combined
+    ]
+    await state.set_state(AdminStates.manage_select)
+    await message.answer("Выберите админа", reply_markup=admin_select_keyboard(labels))
 
 
 @router.message(AdminStates.disable_tg_id)
@@ -3765,6 +3789,10 @@ async def handle_admin_disable_tg_id(message: Message, config: Config, state: FS
     if not _is_owner(message, config):
         await message.answer("Доступ запрещен")
         await state.clear()
+        return
+    if message.text == ADMIN_MENU_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Меню админов", reply_markup=admin_menu_keyboard())
         return
     if not message.text or not message.text.isdigit():
         await message.answer("Нужен tg_user_id числом")
@@ -3777,6 +3805,60 @@ async def handle_admin_disable_tg_id(message: Message, config: Config, state: FS
         await message.answer("Админ не найден", reply_markup=admin_menu_keyboard())
 
 
+@router.message(AdminStates.manage_select)
+async def handle_admin_manage_select(message: Message, config: Config, state: FSMContext) -> None:
+    if not _is_owner(message, config):
+        await message.answer("Доступ запрещен")
+        await state.clear()
+        return
+    if message.text == ADMIN_MENU_BUTTONS[3]:
+        await state.clear()
+        await message.answer("Меню админов", reply_markup=admin_menu_keyboard())
+        return
+    admin_id = _parse_choice_id(message.text or "")
+    if admin_id is None:
+        await message.answer("Выберите админа из списка")
+        return
+    admin = get_admin_by_tg_user_id(config.db_path, admin_id)
+    if not admin:
+        await message.answer("Админ не найден", reply_markup=admin_menu_keyboard())
+        await state.clear()
+        return
+    await state.update_data(manage_admin_id=admin.tg_user_id, manage_admin_active=admin.is_active)
+    await state.set_state(AdminStates.manage_action)
+    await message.answer(
+        f"Админ: {admin.name} ({admin.tg_user_id})",
+        reply_markup=admin_manage_keyboard(is_active=bool(admin.is_active)),
+    )
+
+
+@router.message(AdminStates.manage_action)
+async def handle_admin_manage_action(message: Message, config: Config, state: FSMContext) -> None:
+    if not _is_owner(message, config):
+        await message.answer("Доступ запрещен")
+        await state.clear()
+        return
+    if message.text == ADMIN_MANAGE_BUTTONS[2]:
+        await handle_admin_disable_start(message, config, state)
+        return
+    data = await state.get_data()
+    admin_id = data.get("manage_admin_id")
+    if not admin_id:
+        await handle_admin_disable_start(message, config, state)
+        return
+    if message.text == ADMIN_MANAGE_BUTTONS[0]:
+        set_admin_active(config.db_path, int(admin_id), False)
+        await message.answer("Админ отключен ✅", reply_markup=admin_menu_keyboard())
+        await state.clear()
+        return
+    if message.text == ADMIN_MANAGE_BUTTONS[1]:
+        set_admin_active(config.db_path, int(admin_id), True)
+        await message.answer("Админ активирован ✅", reply_markup=admin_menu_keyboard())
+        await state.clear()
+        return
+    await message.answer("Выберите действие", reply_markup=admin_manage_keyboard(is_active=bool(data.get("manage_admin_active", 1))))
+
+
 @router.message(F.text == ADMIN_MENU_BUTTONS[2])
 async def handle_admin_list(message: Message, config: Config, state: FSMContext) -> None:
     if not _is_owner(message, config):
@@ -3784,10 +3866,16 @@ async def handle_admin_list(message: Message, config: Config, state: FSMContext)
         await state.clear()
         return
     active, inactive = list_admins(config.db_path)
-    active_lines = [f"- {rec.name} ({rec.tg_user_id})" for rec in active] or ["- нет"]
-    inactive_lines = [f"- {rec.name} ({rec.tg_user_id})" for rec in inactive] or ["- нет"]
-    text = "Активные:\n" + "\n".join(active_lines) + "\n\nНеактивные:\n" + "\n".join(inactive_lines)
-    await message.answer(text, reply_markup=admin_menu_keyboard())
+    combined = active + inactive
+    if not combined:
+        await message.answer("Админов пока нет", reply_markup=admin_menu_keyboard())
+        return
+    labels = [
+        _format_choice_label(rec.tg_user_id, f"{rec.name} ({'active' if rec.is_active else 'inactive'})")
+        for rec in combined
+    ]
+    await state.set_state(AdminStates.manage_select)
+    await message.answer("Выберите админа", reply_markup=admin_select_keyboard(labels))
 
 
 @router.message(F.text == ADMIN_MENU_BUTTONS[3])

@@ -274,6 +274,16 @@ def deactivate_admin(db_path: str, tg_user_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def set_admin_active(db_path: str, tg_user_id: int, is_active: bool) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE admins SET is_active = ? WHERE tg_user_id = ?",
+            (1 if is_active else 0, tg_user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def list_admins(db_path: str) -> Tuple[List[AdminRecord], List[AdminRecord]]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
@@ -290,6 +300,18 @@ def list_admins(db_path: str) -> Tuple[List[AdminRecord], List[AdminRecord]]:
         else:
             inactive.append(record)
     return active, inactive
+
+
+def get_admin_by_tg_user_id(db_path: str, tg_user_id: int) -> Optional[AdminRecord]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT tg_user_id, name, is_active FROM admins WHERE tg_user_id = ? LIMIT 1",
+            (tg_user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return AdminRecord(tg_user_id=row[0], name=row[1], is_active=row[2])
 
 
 def is_admin_active(db_path: str, tg_user_id: int) -> bool:
