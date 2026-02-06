@@ -1167,7 +1167,7 @@ async def handle_new_client_confirm(message: Message, config: Config, state: FSM
         return
 
     try:
-        create_client(
+        client_id = create_client(
             config.db_path,
             full_name=full_name,
             phone=phone,
@@ -1183,9 +1183,12 @@ async def handle_new_client_confirm(message: Message, config: Config, state: FSM
             reply_markup=_main_menu_reply_markup(message, config),
         )
         return
-
-    await state.clear()
-    await message.answer("Клиент добавлен ✅", reply_markup=_main_menu_reply_markup(message, config))
+    client = get_client_by_id(config.db_path, int(client_id))
+    if not client:
+        await state.clear()
+        await message.answer("Клиент добавлен ✅", reply_markup=_main_menu_reply_markup(message, config))
+        return
+    await _show_client_card(message, config, client, state)
 
 
 @router.message(F.text == MAIN_MENU_BUTTONS[2])
