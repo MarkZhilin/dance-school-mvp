@@ -1508,9 +1508,38 @@ async def handle_booking_confirm(message: Message, config: Config, state: FSMCon
         await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
         return
 
+    today_str = date.today().strftime("%Y-%m-%d")
+    end_date = _last_day_of_month(date.today()).strftime("%Y-%m-%d")
+    try:
+        pass_id = create_pass(
+            config.db_path,
+            client_id=client_id,
+            group_id=group_id,
+            start_date=today_str,
+            end_date=end_date,
+            is_active=1,
+        )
+    except sqlite3.IntegrityError:
+        await state.clear()
+        await message.answer(
+            "У клиента уже есть активный абонемент",
+            reply_markup=_main_menu_reply_markup(message, config),
+        )
+        return
     upsert_client_group_active(config.db_path, client_id=client_id, group_id=group_id)
-    await state.clear()
-    await message.answer("Готово ✅", reply_markup=_main_menu_reply_markup(message, config))
+    await state.set_state(PassPayStates.choose_method)
+    await state.update_data(
+        client_id=client_id,
+        client_name=data.get("client_name"),
+        group_id=group_id,
+        group_name=data.get("group_name"),
+        pass_id=pass_id,
+        method=None,
+    )
+    await message.answer(
+        f"✅ Абонемент выдан ({today_str} – {end_date}). Выберите способ оплаты:",
+        reply_markup=pass_pay_method_keyboard(),
+    )
 
 
 @router.message(F.text == MAIN_MENU_BUTTONS[3])
